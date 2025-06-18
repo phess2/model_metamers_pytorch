@@ -1,2 +1,12 @@
 *.sh
 outLogs/
+*.JPEG
+*.wav
+*.pckl
+*.npy
+*.pyc
+*.pt
+assets/fMRI_natsound_data/
+assets/full_400_16_class_imagenet_val_images/
+assets/image_names_16_class_imagenet_training_data/
+*.tar
