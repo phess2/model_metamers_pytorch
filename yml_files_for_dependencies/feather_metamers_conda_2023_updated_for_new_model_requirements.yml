@@ -1,4 +1,4 @@
-name: model_metamers_pytorch_updates_for_new_model_requirements
+name: model_metamers_env
 channels:
   - pytorch
   - anaconda
