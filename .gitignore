@@ -11,3 +11,4 @@ assets/full_400_16_class_imagenet_val_images/
 assets/image_names_16_class_imagenet_training_data/
 *.tar
 conda_envs
+metamers
