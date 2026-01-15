@@ -1,4 +1,3 @@
-import sys
 import os
 
 from robustness.datasets import ImageNet
@@ -7,7 +6,7 @@ from robustness import train
 from cox.utils import Parameters
 from cox import store
 
-from robustness import model_utils, datasets, train, defaults
+from robustness import defaults
 import torch as ch 
 import numpy as np
 import argparse 

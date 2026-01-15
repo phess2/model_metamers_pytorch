@@ -6,3 +6,6 @@ conda_envs
 metamers
 __pycache__
 pytorch_checkpoints
+
+wandb/
+experiments/

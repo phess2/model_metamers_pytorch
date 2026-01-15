@@ -1,0 +1,24 @@
+{
+    "model_name": "lipsalexnet",
+    "hparams": {
+        "num_classes": 1000,
+        "w_max": 6.0,
+        "projection": "spectral_normalize",
+        "max_epochs": 10,
+        "val_check_interval": 0.25
+    },
+    "data_settings": {
+        "batch_size": 256,
+        "pin_memory": false
+    },
+    "optim_settings": {
+        "mult_optimizers": false,
+        "optimizer": {"name": "SGD", 
+            "kwargs": {
+                "lr": 0.01,
+                "momentum": 0.9,
+                "weight_decay": 0.0005
+            }
+        }
+    }
+}
