@@ -4,7 +4,7 @@ import dill
 import torch as ch
 
 from .attacker import AttackerModel
-from .tools import constants, helpers
+from .tools import constants
 
 
 class FeatureExtractor(ch.nn.Module):
@@ -101,7 +101,7 @@ def make_and_restore_model(
 
             # Makes us able to load models saved with legacy versions
             state_dict_path = "model"
-            if not ("model" in checkpoint):
+            if "model" not in checkpoint:
                 state_dict_path = "state_dict"
 
             try:

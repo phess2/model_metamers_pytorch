@@ -15,7 +15,6 @@ import os
 import pickle
 
 import numpy as np
-import scipy
 import torch
 from matplotlib import pylab as plt
 from PIL import Image
@@ -24,7 +23,6 @@ from analysis_scripts.default_paths import WORDNET_ID_TO_HUMAN_PATH
 from analysis_scripts.helpers_16_choice import force_16_choice
 from analysis_scripts.input_helpers import generate_import_image_functions
 from robustness import custom_synthesis_losses
-from robustness.model_utils import make_and_restore_model
 from robustness.tools.distance_measures import *
 from robustness.tools.label_maps import CLASS_DICT
 
@@ -166,7 +164,9 @@ def run_audio_metamer_generation(
         model.disable_dropout_functions()
         print("Turning off dropout functions because we are measuring activations")
     except AttributeError:
-        print("Warning: Model doesn't have disable_dropout_functions method, which is fine")
+        print(
+            "Warning: Model doesn't have disable_dropout_functions method, which is fine"
+        )
         pass
     except Exception as e:
         print(f"Warning: Failed to disable dropout functions: {e}")
@@ -249,7 +249,9 @@ def run_audio_metamer_generation(
             model.enable_dropout_functions()
             print("Turning on dropout functions because we are starting synthesis")
         except AttributeError:
-            print("Warning: Model doesn't have enable_dropout_functions method, which is fine")
+            print(
+                "Warning: Model doesn't have enable_dropout_functions method, which is fine"
+            )
             pass
         except Exception as e:
             print(f"Warning: Failed to enable dropout functions: {e}")
@@ -274,7 +276,9 @@ def run_audio_metamer_generation(
             try:
                 synth_kwargs["custom_loss"].optimization_count = 0
             except AttributeError:
-                print("Warning: Custom loss doesn't have optimization_count attribute, which is fine")
+                print(
+                    "Warning: Custom loss doesn't have optimization_count attribute, which is fine"
+                )
                 pass
             except Exception as e:
                 print(f"Warning: Failed to reset optimization count: {e}")
@@ -289,10 +293,14 @@ def run_audio_metamer_generation(
                         "Turning off dropout functions because it is the last optimization pass through"
                     )
                 except AttributeError:
-                    print("Warning: Model doesn't have disable_dropout_functions method, which is fine")
+                    print(
+                        "Warning: Model doesn't have disable_dropout_functions method, which is fine"
+                    )
                     pass
                 except Exception as e:
-                    print(f"Warning: Failed to disable dropout functions in last pass: {e}")
+                    print(
+                        f"Warning: Failed to disable dropout functions in last pass: {e}"
+                    )
                     pass
 
             im_n = xadv

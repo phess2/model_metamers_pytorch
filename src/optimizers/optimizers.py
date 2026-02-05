@@ -1,5 +1,6 @@
 import torch
 
+
 def set_up_conv_optimizer(optim_settings, conv_parameters, linear_parameters):
     if optim_settings["mult_optimizers"]:
         # Configure linear optimizer (Muon)
@@ -10,9 +11,7 @@ def set_up_conv_optimizer(optim_settings, conv_parameters, linear_parameters):
             torch.optim, optim_settings["linear_optimizer"]["name"]
         )
         linear_parameters = [{"params": linear_parameters}]
-        linear_optimizer = linear_optimizer_class(
-            linear_parameters, **linear_kwargs
-        )
+        linear_optimizer = linear_optimizer_class(linear_parameters, **linear_kwargs)
 
         # Configure conv optimizer
         conv_kwargs = optim_settings["conv_optimizer"]["kwargs"].copy()
@@ -34,9 +33,7 @@ def set_up_conv_optimizer(optim_settings, conv_parameters, linear_parameters):
             scheduler_class = linear_lr_scheduler.get("class")
             scheduler_kwargs = linear_lr_scheduler.get("kwargs", {})
             if scheduler_class is not None:
-                linear_scheduler = scheduler_class(
-                    linear_optimizer, **scheduler_kwargs
-                )
+                linear_scheduler = scheduler_class(linear_optimizer, **scheduler_kwargs)
                 linear_scheduler_config = {
                     "scheduler": linear_scheduler,
                     "interval": scheduler_kwargs.get("interval", "step"),
@@ -71,12 +68,7 @@ def set_up_conv_optimizer(optim_settings, conv_parameters, linear_parameters):
         optimizer_kwargs = optim_settings["optimizer"]["kwargs"].copy()
 
         optimizer_class = getattr(torch.optim, optim_settings["optimizer"]["name"])
-        parameters = [
-            {
-                "params": list(linear_parameters)
-                + list(conv_parameters)
-            }
-        ]
+        parameters = [{"params": list(linear_parameters) + list(conv_parameters)}]
         optimizer = optimizer_class(parameters, **optimizer_kwargs)
 
         # Configure LR scheduler for single optimizer

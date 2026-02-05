@@ -1,8 +1,6 @@
-import sys
 
-from model_analysis_folders.all_model_info import IMAGENET_PATH, MODEL_BASE_PATH
+from model_analysis_folders.all_model_info import IMAGENET_PATH
 from robustness import datasets
-from robustness.attacker import AttackerModel
 from robustness.model_utils import make_and_restore_model
 
 

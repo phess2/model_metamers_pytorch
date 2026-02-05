@@ -6,8 +6,8 @@ Tests that top-1/top-5 accuracy and per-layer norm-change ratios work correctly.
 Run with:
     python scripts/sanity_check_metrics.py
 """
+
 import torch
-import torch.nn.functional as F
 import sys
 import os
 
@@ -114,8 +114,12 @@ def test_topk_accuracy():
     expected_top1 = 8
     expected_top5 = 12  # 8 (top-1) + 4 (top-5 only)
 
-    assert top1_correct == expected_top1, f"Expected {expected_top1} top-1 correct, got {top1_correct}"
-    assert top5_correct == expected_top5, f"Expected {expected_top5} top-5 correct, got {top5_correct}"
+    assert top1_correct == expected_top1, (
+        f"Expected {expected_top1} top-1 correct, got {top1_correct}"
+    )
+    assert top5_correct == expected_top5, (
+        f"Expected {expected_top5} top-5 correct, got {top5_correct}"
+    )
     assert top5_acc >= top1_acc, "Top-5 accuracy should be >= top-1 accuracy"
     print("   PASSED: Top-k accuracy computation is correct")
 
@@ -158,8 +162,12 @@ def test_module_integration():
 
         # Check that norm_ratio tracking is initialized
         assert hasattr(module, "norm_ratio_sums"), "Module should have norm_ratio_sums"
-        assert hasattr(module, "norm_ratio_counts"), "Module should have norm_ratio_counts"
-        assert hasattr(module, "_lips_layer_names"), "Module should have _lips_layer_names"
+        assert hasattr(module, "norm_ratio_counts"), (
+            "Module should have norm_ratio_counts"
+        )
+        assert hasattr(module, "_lips_layer_names"), (
+            "Module should have _lips_layer_names"
+        )
 
         print(f"   Tracking {len(module._lips_layer_names)} Lipschitz layers:")
         for name in module._lips_layer_names:
@@ -182,8 +190,9 @@ def test_module_integration():
         print(f"   Total accumulated ratio: {total_ratio:.6f}")
         print(f"   Total layer updates: {total_count}")
 
-        assert total_count == len(module._lips_layer_names), \
+        assert total_count == len(module._lips_layer_names), (
             "Each layer should have been projected once"
+        )
 
         print("   PASSED: LipsAlexNetModule integration works")
 
@@ -204,7 +213,9 @@ def main():
     print("\n" + "=" * 60)
     print("ALL SANITY CHECKS PASSED!")
     print("=" * 60)
-    print("\nThe implementation is ready. New metrics will be logged to Weights & Biases:")
+    print(
+        "\nThe implementation is ready. New metrics will be logged to Weights & Biases:"
+    )
     print("  - val/top1_acc: Top-1 validation accuracy")
     print("  - val/top5_acc: Top-5 validation accuracy")
     print("  - train/norm_ratio/<layer_name>: Per-layer norm-change ratio")

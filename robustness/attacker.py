@@ -29,7 +29,6 @@ called directly---instead, these arguments are passed along from
 
 import os
 
-import dill
 import torch as ch
 
 if int(os.environ.get("NOTEBOOK_MODE", 0)) == 1:
@@ -221,6 +220,7 @@ class Attacker(ch.nn.Module):
                 # Import Muon optimizer here to avoid dependency issues
                 try:
                     from muon import Muon
+
                     muon_optimizer = Muon([x], lr=step_size)
                 except ImportError:
                     print("Warning: Muon optimizer not found, falling back to SGD")
@@ -259,7 +259,7 @@ class Attacker(ch.nn.Module):
                         # Use default SGD step
                         x = step.step(x, grad)
                         x = step.project(x)
-                    
+
                     if do_tqdm:
                         iterator.set_description("Current loss: {l}".format(l=loss))
 

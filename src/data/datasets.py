@@ -43,7 +43,7 @@ def get_vision_dataset(
 ) -> datasets.ImageFolder:
     if dataset_name == "imagenet":
         train_transform, val_transform = get_vision_transform(dataset_name, image_size)
-        if stage == 'validate':
+        if stage == "validate":
             return ImageNetFolder(root_dir, "val", val_transform)
         else:
             return ImageNetFolder(root_dir, "train", train_transform), ImageNetFolder(

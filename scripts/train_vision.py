@@ -14,11 +14,12 @@ from lightning.pytorch.loggers.wandb import WandbLogger
 from src.models.lipsvision import get_module
 
 
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision("medium")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 hostname = socket.gethostname()
+
 
 def run_train(args: ArgumentParser):
     seed_everything(args.seed)
@@ -27,37 +28,37 @@ def run_train(args: ArgumentParser):
     config_path = args.config
     print(f"Loading config from {config_path}")
 
-    if config_path.endswith('.json'):
-        with open(config_path, 'r') as f:
+    if config_path.endswith(".json"):
+        with open(config_path, "r") as f:
             config = json.load(f)
     else:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
 
     module = get_module(config)
     print(f"Module: {module}")
 
-    config['data_settings']['num_workers'] = args.num_workers
-    config['ngpus'] = args.gpus
+    config["data_settings"]["num_workers"] = args.num_workers
+    config["ngpus"] = args.gpus
 
     # Override learning rate if provided via command line
     if args.lr is not None:
-        if config['optim_settings'].get('mult_optimizers', False):
+        if config["optim_settings"].get("mult_optimizers", False):
             # Handle multi-optimizer case
-            if 'linear_optimizer' in config['optim_settings']:
-                config['optim_settings']['linear_optimizer']['kwargs']['lr'] = args.lr
-            if 'conv_optimizer' in config['optim_settings']:
-                config['optim_settings']['conv_optimizer']['kwargs']['lr'] = args.lr
+            if "linear_optimizer" in config["optim_settings"]:
+                config["optim_settings"]["linear_optimizer"]["kwargs"]["lr"] = args.lr
+            if "conv_optimizer" in config["optim_settings"]:
+                config["optim_settings"]["conv_optimizer"]["kwargs"]["lr"] = args.lr
         else:
             # Single optimizer case
-            config['optim_settings']['optimizer']['kwargs']['lr'] = args.lr
+            config["optim_settings"]["optimizer"]["kwargs"]["lr"] = args.lr
 
     config_path = pathlib.Path(config_path)
 
     exp_root = args.exp_dir / config_path.stem
     checkpoint_dir = exp_root / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_paths = sorted(checkpoint_dir.glob('*.ckpt'), key=os.path.getctime)
+    ckpt_paths = sorted(checkpoint_dir.glob("*.ckpt"), key=os.path.getctime)
 
     ckpt_path = None
     if args.resume_training:
@@ -74,11 +75,11 @@ def run_train(args: ArgumentParser):
         # Format LR to avoid scientific notation in name (e.g., 0.0001 -> lr1e-4)
         # Remove leading zeros from exponent (e-04 -> e-4, e+01 -> e+1)
         lr_sci = f"{args.lr:.0e}"
-        lr_formatted = re.sub(r'e([+-])0+(\d)', r'e\1\2', lr_sci)
+        lr_formatted = re.sub(r"e([+-])0+(\d)", r"e\1\2", lr_sci)
         lr_str = f"lr{lr_formatted}"
-        wandb_name = f'{config_path.stem}_{lr_str}_{run_idx}'
+        wandb_name = f"{config_path.stem}_{lr_str}_{run_idx}"
     else:
-        wandb_name = f'{config_path.stem}_{run_idx}'
+        wandb_name = f"{config_path.stem}_{run_idx}"
 
     # Define loggers and callbacks
     wandb_logger = WandbLogger(
@@ -87,39 +88,42 @@ def run_train(args: ArgumentParser):
         name=wandb_name,
     )
     checkpoint_callback = ModelCheckpoint(
-        monitor='val/loss',
-        mode='min',
+        monitor="val/loss",
+        mode="min",
         save_top_k=1,
         save_last=True,
         dirpath=checkpoint_dir,
-        filename='{epoch:02d}-{val/loss:.4f}',
+        filename="{epoch:02d}-{val/loss:.4f}",
     )
     early_stop_callback = EarlyStopping(
-        monitor='val/loss',
-        mode='min',
+        monitor="val/loss",
+        mode="min",
         patience=10,
     )
 
     trainer = Trainer(
         precision="32",
         default_root_dir=exp_root,
-        max_epochs=config['hparams']['max_epochs'],
+        max_epochs=config["hparams"]["max_epochs"],
         num_nodes=args.num_nodes,
         devices=args.gpus,
-        accelerator='gpu',
+        accelerator="gpu",
         strategy="ddp" if args.gpus > 1 else "auto",
-        limit_val_batches=config['hparams'].get('limit_val_batches', 1.0),
-        limit_train_batches=config['hparams'].get('limit_train_batches', 1.0),
-        val_check_interval=config['hparams'].get('val_check_interval', 1.0),
-        gradient_clip_val=config['hparams'].get('gradient_clip_val', None),
-        gradient_clip_algorithm=config['hparams'].get('gradient_clip_algorithm', 'value'),
-        accumulate_grad_batches=config['hparams'].get('accumulate_grad_batches', 1),
-        profiler=config['hparams'].get('profiler', None),
+        limit_val_batches=config["hparams"].get("limit_val_batches", 1.0),
+        limit_train_batches=config["hparams"].get("limit_train_batches", 1.0),
+        val_check_interval=config["hparams"].get("val_check_interval", 1.0),
+        gradient_clip_val=config["hparams"].get("gradient_clip_val", None),
+        gradient_clip_algorithm=config["hparams"].get(
+            "gradient_clip_algorithm", "value"
+        ),
+        accumulate_grad_batches=config["hparams"].get("accumulate_grad_batches", 1),
+        profiler=config["hparams"].get("profiler", None),
         callbacks=[checkpoint_callback, early_stop_callback],
         # enable_checkpointing=True,
         logger=wandb_logger,
     )
     trainer.fit(module, ckpt_path=ckpt_path)
+
 
 def main():
     args = ArgumentParser()
@@ -131,9 +135,12 @@ def main():
     args.add_argument("--resume_training", action="store_true")
     args.add_argument("--ckpt_path", type=str, default="")
     args.add_argument("--num_nodes", type=int, default=1)
-    args.add_argument("--lr", type=float, default=None, help="Override learning rate from config")
+    args.add_argument(
+        "--lr", type=float, default=None, help="Override learning rate from config"
+    )
     args = args.parse_args()
     run_train(args)
+
 
 if __name__ == "__main__":
     main()

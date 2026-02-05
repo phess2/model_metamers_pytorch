@@ -11,6 +11,7 @@ from .layers.LipsLayers import LipsConv2d, LipsLinear
 
 from src.optimizers.optimizers import set_up_conv_optimizer
 
+
 class LipsAlexNetModule(LightningModule):
     def __init__(self, config: dict):
         super(LipsAlexNetModule, self).__init__()
@@ -159,7 +160,9 @@ class LipsAlexNetModule(LightningModule):
         optim_settings = self.optim_settings
         linear_parameters = self.classifier.parameters()
         conv_parameters = self.model.parameters()
-        result = set_up_conv_optimizer(optim_settings, conv_parameters, linear_parameters)
+        result = set_up_conv_optimizer(
+            optim_settings, conv_parameters, linear_parameters
+        )
         return result
 
     def forward(
