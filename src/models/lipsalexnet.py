@@ -137,6 +137,18 @@ class LipsAlexNetModule(LightningModule):
 
         self.test_step_outputs = []
 
+        # Initialize accumulators for per-layer norm-change ratio metrics
+        # These track how much the projection step modifies each layer's weights
+        self._lips_layer_names = []
+        for name in self.featurenames:
+            if "conv" in name:
+                self._lips_layer_names.append(name)
+        for name in self.classifier_names:
+            if name.startswith("fc") and "relu" not in name:
+                self._lips_layer_names.append(name)
+        self.norm_ratio_sums = {name: 0.0 for name in self._lips_layer_names}
+        self.norm_ratio_counts = {name: 0 for name in self._lips_layer_names}
+
     def __str__(self):
         return f"LipsAlexNetModule(num_classes={self.num_classes}, w_max={self.w_max}, projection={self.projection})"
 
@@ -202,13 +214,21 @@ class LipsAlexNetModule(LightningModule):
         return self.data_module.test_dataloader()
 
     def project_step(self):
+        """
+        Project weights to enforce Lipschitz constraints and accumulate
+        per-layer norm-change ratio metrics.
+        """
         if self.projection is not None:
             for layer, name in list(zip(self.model, self.featurenames)):
                 if "conv" in name:
-                    layer.project_()
+                    ratio = layer.project_()
+                    self.norm_ratio_sums[name] += float(ratio)
+                    self.norm_ratio_counts[name] += 1
             for layer, name in list(zip(self.classifier, self.classifier_names)):
                 if name.startswith("fc") and "relu" not in name:
-                    layer.project_()
+                    ratio = layer.project_()
+                    self.norm_ratio_sums[name] += float(ratio)
+                    self.norm_ratio_counts[name] += 1
 
     def training_step(self, batch, batch_idx):
         data, target = batch
@@ -251,18 +271,45 @@ class LipsAlexNetModule(LightningModule):
         data, target = batch
         output = self.forward(data)
         loss = F.cross_entropy(output, target)
-        pred = output.argmax(dim=1, keepdim=True)
-        correct = pred.eq(target.view_as(pred)).sum().item()
-        accuracy = correct / target.size(0)
+
+        # Compute top-1 and top-5 accuracy
+        batch_size = target.size(0)
+        _, pred = output.topk(5, dim=1, largest=True, sorted=True)
+        pred = pred.t()  # Shape: (5, batch_size)
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+        # Top-1: check only the first prediction
+        top1_correct = correct[0].sum().item()
+        # Top-5: check if any of the top 5 predictions match
+        top5_correct = correct.any(dim=0).sum().item()
+
+        top1_acc = top1_correct / batch_size
+        top5_acc = top5_correct / batch_size
+
         self.log(
             "val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True
         )
         self.log(
             "val/accuracy",
-            accuracy,
+            top1_acc,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            "val/top1_acc",
+            top1_acc,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            "val/top5_acc",
+            top5_acc,
+            on_step=False,
+            on_epoch=True,
             logger=True,
         )
         self.log(
@@ -272,7 +319,7 @@ class LipsAlexNetModule(LightningModule):
             on_epoch=True,
             logger=True,
         )
-        return {"val_loss": loss, "val_accuracy": accuracy}
+        return {"val_loss": loss, "val_accuracy": top1_acc, "val_top5_acc": top5_acc}
 
     def test_step(self, batch, batch_idx):
         data, target = batch
@@ -308,6 +355,26 @@ class LipsAlexNetModule(LightningModule):
             self.log("test/loss_epoch", avg_test_loss, logger=True)
             self.log("test/accuracy", test_accuracy, logger=True, prog_bar=True)
             self.test_step_outputs.clear()
+
+    def on_train_epoch_end(self):
+        """
+        Log per-layer norm-change ratio metrics at end of each training epoch.
+        These metrics show how much the Lipschitz projection step modified each layer.
+        """
+        for name in self._lips_layer_names:
+            count = self.norm_ratio_counts[name]
+            if count > 0:
+                avg_ratio = self.norm_ratio_sums[name] / count
+                self.log(
+                    f"train/norm_ratio/{name}",
+                    avg_ratio,
+                    on_step=False,
+                    on_epoch=True,
+                    logger=True,
+                )
+            # Reset accumulators for next epoch
+            self.norm_ratio_sums[name] = 0.0
+            self.norm_ratio_counts[name] = 0
 
     def get_lips_bound(self):
         """

@@ -164,20 +164,40 @@ class LipsLinear(nn.Module):
 
     @torch.no_grad()
     def project_(self):
-        unscaled_weight = self.weight.data / self.scale
+        """
+        Project weights to enforce Lipschitz constraint.
+
+        Returns:
+            float: The norm-change ratio (||ΔW||_F / lips_weight_scale) / w_max,
+                   which measures how much the projection changed the weights
+                   relative to the allowed Lipschitz bound. Returns 0.0 if
+                   projection is None or not applicable.
+        """
         if self.projection is None:
-            return
+            return 0.0
+
+        # Cache weight before projection
+        W_before = self.weight.data.clone()
+
+        unscaled_weight = self.weight.data / self.scale
         if isinstance(self.projection, str):
             if self.projection == "orthogonalize":
                 W = _orthogonalize(unscaled_weight)
             elif self.projection == "spectral_normalize":
                 W = _spectral_normalize(unscaled_weight)
             else:
-                return
+                return 0.0
         else:
             W = self.projection(unscaled_weight)
         W = W * self.scale
         self.weight.copy_(W)
+
+        # Compute norm-change ratio: (||ΔW||_F / lips_weight_scale) / w_max
+        delta = self.weight.data - W_before
+        delta_norm = delta.norm().item()
+        effective_delta = delta_norm / self.lips_weight_scale.item()
+        ratio = effective_delta / self.w_max
+        return ratio
 
     def get_lips_bound(self):
         """
@@ -286,8 +306,21 @@ class LipsConv2d(nn.Module):
 
     @torch.no_grad()
     def project_(self):
+        """
+        Project weights to enforce Lipschitz constraint.
+
+        Returns:
+            float: The norm-change ratio (||ΔW||_F / lips_weight_scale) / w_max,
+                   which measures how much the projection changed the weights
+                   relative to the allowed Lipschitz bound. Returns 0.0 if
+                   projection is None or not applicable.
+        """
         if self.projection is None:
-            return
+            return 0.0
+
+        # Cache weight before projection
+        W_before = self.weight.data.clone()
+
         if isinstance(self.projection, str):
             W = self.weight
             oc, icg, kh, kw = W.shape
@@ -302,10 +335,17 @@ class LipsConv2d(nn.Module):
                         slice_ij = W[:, :, i, j] / self.scale
                         W[:, :, i, j] = _spectral_normalize(slice_ij) * self.scale
             else:
-                return
+                return 0.0
         else:
             W = self.projection(self.weight)
             self.weight.copy_(W)
+
+        # Compute norm-change ratio: (||ΔW||_F / lips_weight_scale) / w_max
+        delta = self.weight.data - W_before
+        delta_norm = delta.norm().item()
+        effective_delta = delta_norm / self.lips_weight_scale.item()
+        ratio = effective_delta / self.w_max
+        return ratio
 
     def get_lips_bound(self):
         """
