@@ -14,8 +14,6 @@ import matplotlib.pylab as plt
 import seaborn as sns
 
 
-
-
 def choose_metamer_layer(metamer_responses_by_layer, measured_layer):
     all_human_responses = metamer_responses_by_layer[measured_layer]
     average_metamer_recognition = np.mean(

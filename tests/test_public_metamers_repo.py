@@ -11,7 +11,13 @@ import importlib
 import robustness
 
 # For testing metamer generation.
-from analysis_scripts import *
+from analysis_scripts import (
+    make_metamers_imagenet_16_category_val_400_only_save_metamer_layers,
+    make_null_distributions,
+    eval_natural_imagenet,
+    make_metamers_wsj400_behavior_only_save_metamer_layers,
+    eval_natural_jsinv3,
+)
 
 # List of the networks that we want to compare
 VISION_NETWORK_LIST = (

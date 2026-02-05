@@ -9,7 +9,6 @@ from sklearn import *
 import scipy
 
 
-
 def compute_median_across_predictions(combine_predictions):
     """
     Computes a summary median metric from a set of predictions collected

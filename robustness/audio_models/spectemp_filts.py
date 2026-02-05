@@ -399,7 +399,6 @@ def spectemp_filts_time_average_coch1(pretrained=False, **kwargs):
 ## jfeather 3/23/17
 
 
-
 def filt_temp_mod(
     fc_Hz, N, sr_Hz, LOWPASS=False, HIGHPASS=False, show_plots=False, zero_pad=False
 ):

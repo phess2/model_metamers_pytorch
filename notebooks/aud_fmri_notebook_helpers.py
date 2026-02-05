@@ -17,7 +17,6 @@ from model_analysis_folders import all_model_info
 import scipy.stats
 
 
-
 def split_voxel_data_by_participant(voxel_data, voxel_meta):
     subj_idx = voxel_meta["subj_idx"]
     all_participants = []
