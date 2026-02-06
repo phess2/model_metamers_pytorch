@@ -14,9 +14,8 @@ from lightning.pytorch.loggers.wandb import WandbLogger
 from src.models.lipsvision import get_module
 
 
+# Use only the new API; do not set torch.backends.cuda/cudnn.allow_tf32 (legacy mix causes RuntimeError).
 torch.set_float32_matmul_precision("medium")
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
 
 hostname = socket.gethostname()
 
