@@ -99,23 +99,27 @@ class ImageNetDataModule(LightningDataModule):
         return len(self.train_dataset.classes)
 
 
-def get_vision_dataloader(
-    dataset_name: str,
-    root_dir: Union[str, Path],
-    image_size: int,
-    batch_size: int,
-    num_workers: int,
-    pin_memory: bool,
-    persistent_workers: bool,
-) -> DataLoader:
+def get_datamodule(config: dict) -> LightningDataModule:
+    """
+    Build a ``LightningDataModule`` from a training config dict.
+
+    The config is expected to have a ``data_settings`` section.  The
+    ``dataset`` key (default ``"imagenet"``) selects the data module class.
+    Remaining keys are forwarded as constructor kwargs.
+
+    Extend this function when adding new datasets (e.g. audio).
+    """
+    data_settings = config.get("data_settings", {})
+    dataset_name = data_settings.get("dataset", "imagenet")
+
+    # Keys accepted by ImageNetDataModule
+    _IMAGENET_KEYS = {
+        "data_dir", "batch_size", "num_workers",
+        "pin_memory", "persistent_workers", "image_size",
+    }
+
     if dataset_name == "imagenet":
-        return ImageNetDataModule(
-            root_dir,
-            batch_size,
-            num_workers,
-            pin_memory,
-            persistent_workers,
-            image_size,
-        )
+        kwargs = {k: v for k, v in data_settings.items() if k in _IMAGENET_KEYS}
+        return ImageNetDataModule(**kwargs)
     else:
-        raise ValueError(f"Dataset {dataset_name} not supported")
+        raise ValueError(f"Dataset '{dataset_name}' not supported")
