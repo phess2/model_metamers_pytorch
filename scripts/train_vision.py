@@ -35,7 +35,6 @@ def run_train(args: ArgumentParser):
             config = yaml.load(f, Loader=yaml.FullLoader)
 
     module = get_module(config)
-    print(f"Module: {module}")
 
     config["data_settings"]["num_workers"] = args.num_workers
     config["ngpus"] = args.gpus
@@ -56,8 +55,11 @@ def run_train(args: ArgumentParser):
 
     exp_root = args.exp_dir / config_path.stem
     checkpoint_dir = exp_root / "checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_paths = sorted(checkpoint_dir.glob("*.ckpt"), key=os.path.getctime)
+    if not args.no_checkpoints:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_paths = sorted(checkpoint_dir.glob("*.ckpt"), key=os.path.getctime)
+    else:
+        ckpt_paths = []
 
     ckpt_path = None
     if args.resume_training:
@@ -67,6 +69,7 @@ def run_train(args: ArgumentParser):
             ckpt_path = str(ckpt_paths[-1])
 
     module = module(config)
+    print(f"Module: {module.__str__()}")
     run_idx = len(ckpt_paths)
 
     # Build wandb run name
@@ -86,19 +89,23 @@ def run_train(args: ArgumentParser):
         log_model=False,
         name=wandb_name,
     )
-    checkpoint_callback = ModelCheckpoint(
-        monitor="val/loss",
-        mode="min",
-        save_top_k=1,
-        save_last=True,
-        dirpath=checkpoint_dir,
-        filename="{epoch:02d}-{val/loss:.4f}",
-    )
     early_stop_callback = EarlyStopping(
         monitor="val/loss",
         mode="min",
         patience=10,
     )
+    if args.no_checkpoints:
+        callbacks = [early_stop_callback]
+    else:
+        checkpoint_callback = ModelCheckpoint(
+            monitor="val/loss",
+            mode="min",
+            save_top_k=1,
+            save_last=True,
+            dirpath=checkpoint_dir,
+            filename="{epoch:02d}-{val/loss:.4f}",
+        )
+        callbacks = [checkpoint_callback, early_stop_callback]
 
     trainer = Trainer(
         precision="32",
@@ -117,8 +124,8 @@ def run_train(args: ArgumentParser):
         ),
         accumulate_grad_batches=config["hparams"].get("accumulate_grad_batches", 1),
         profiler=config["hparams"].get("profiler", None),
-        callbacks=[checkpoint_callback, early_stop_callback],
-        # enable_checkpointing=True,
+        callbacks=callbacks,
+        enable_checkpointing=not args.no_checkpoints,
         logger=wandb_logger,
     )
     trainer.fit(module, ckpt_path=ckpt_path)
@@ -136,6 +143,11 @@ def main():
     args.add_argument("--num_nodes", type=int, default=1)
     args.add_argument(
         "--lr", type=float, default=None, help="Override learning rate from config"
+    )
+    args.add_argument(
+        "--no_checkpoints",
+        action="store_true",
+        help="Disable checkpoint saving (e.g. for LR sweeps to avoid checkpoint I/O)",
     )
     args = args.parse_args()
     run_train(args)
