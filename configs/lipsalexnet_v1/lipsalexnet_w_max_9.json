@@ -4,7 +4,7 @@
         "num_classes": 1000,
         "w_max": 9.0,
         "projection": "spectral_normalize",
-        "max_epochs": 10,
+        "max_epochs": 100,
         "val_check_interval": 0.25
     },
     "data_settings": {
