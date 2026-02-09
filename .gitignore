@@ -9,3 +9,6 @@ pytorch_checkpoints
 
 wandb/
 experiments/
+
+.cursorignore
+.cursor/
