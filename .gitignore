@@ -9,3 +9,7 @@ pytorch_checkpoints
 
 wandb/
 experiments/
+
+.cursorignore
+.cursor/
+.ruff_cache/
