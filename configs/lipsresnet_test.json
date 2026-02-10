@@ -4,7 +4,7 @@
         "num_classes": 1000,
         "w_max": 2.0,
         "projection": "spectral_normalize",
-        "max_epochs": 50,
+        "max_epochs": 10,
         "val_check_interval": 0.25,
         "block_type": "basic",
         "layer_sizes": [2, 2, 2, 2],
