@@ -16,7 +16,7 @@ Example usage::
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Sequence
 
 import torch
 from torch import nn
@@ -75,9 +75,7 @@ class ActivationExtractor:
                     f"Layer '{name}' not found in model. "
                     f"Available: {sorted(name_to_module.keys())}"
                 )
-            hook = name_to_module[name].register_forward_hook(
-                self._make_hook(name)
-            )
+            hook = name_to_module[name].register_forward_hook(self._make_hook(name))
             self._hooks.append(hook)
 
     def _make_hook(self, name: str):
@@ -89,6 +87,7 @@ class ActivationExtractor:
                     self.activations[name] = output
             else:
                 self.activations[name] = output
+
         return hook_fn
 
     def remove_hooks(self) -> None:

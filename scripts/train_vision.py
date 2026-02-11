@@ -17,7 +17,7 @@ from argparse import ArgumentParser
 
 import torch
 from lightning import Trainer, seed_everything
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint  # , EarlyStopping
 from lightning.pytorch.loggers.wandb import WandbLogger
 
 from src.data.dataloaders import get_datamodule
@@ -89,17 +89,23 @@ def run_train(args: ArgumentParser):
         log_model=False,
         name=wandb_name,
     )
-    early_stop_callback = EarlyStopping(
-        monitor="val/loss", mode="min", patience=10,
-    )
+    # early_stop_callback = EarlyStopping(
+    #     monitor="val/loss", mode="min", patience=10,
+    # )
     if args.no_checkpoints:
-        callbacks = [early_stop_callback]
+        # callbacks = [early_stop_callback]
+        callbacks = []
     else:
         checkpoint_callback = ModelCheckpoint(
-            monitor="val/loss", mode="min", save_top_k=1, save_last=True,
-            dirpath=checkpoint_dir, filename="{epoch:02d}-{val/loss:.4f}",
+            monitor="val/loss",
+            mode="min",
+            save_top_k=1,
+            save_last=True,
+            dirpath=checkpoint_dir,
+            filename="{epoch:02d}-{val/loss:.4f}",
         )
-        callbacks = [checkpoint_callback, early_stop_callback]
+        # callbacks = [checkpoint_callback, early_stop_callback]
+        callbacks = [checkpoint_callback]
 
     # ---- Trainer -------------------------------------------------------
     hparams = config.get("hparams", {})
@@ -136,11 +142,14 @@ def main():
     parser.add_argument("--ckpt_path", type=str, default="")
     parser.add_argument("--num_nodes", type=int, default=1)
     parser.add_argument(
-        "--lr", type=float, default=None,
+        "--lr",
+        type=float,
+        default=None,
         help="Override learning rate from config",
     )
     parser.add_argument(
-        "--no_checkpoints", action="store_true",
+        "--no_checkpoints",
+        action="store_true",
         help="Disable checkpoint saving (e.g. for LR sweeps to avoid checkpoint I/O)",
     )
     args = parser.parse_args()

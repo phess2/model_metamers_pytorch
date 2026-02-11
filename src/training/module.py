@@ -15,10 +15,9 @@ New model architectures (vision, audio, ...) only need to subclass
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import torch
-import torch.nn.functional as F
 from lightning import LightningModule
 from torch import nn
 
@@ -86,8 +85,38 @@ class LipsLightningModule(LightningModule):
     # ------------------------------------------------------------------
 
     def configure_optimizers(self):
-        """Delegate to ``src.optimizers.optimizers.configure_optimizers``."""
-        return _configure_optimizers(self.optim_settings, self.model)
+        """Delegate to ``src.optimizers.optimizers.configure_optimizers``.
+
+        Computes ``steps_per_epoch`` from the Lightning trainer so that
+        scheduler configs with ``"convert_epochs_to_steps": true`` can
+        automatically translate epoch-based durations into step counts.
+
+        Also extracts per-scheduler ``interval`` metadata so we can step
+        ``"step"``-level schedulers in ``training_step`` and
+        ``"epoch"``-level schedulers in ``on_train_epoch_end``.
+        """
+        # Compute steps per epoch from the trainer (accounts for
+        # accumulate_grad_batches, limit_train_batches, multi-GPU, etc.)
+        total_steps = self.trainer.estimated_stepping_batches
+        max_epochs = self.trainer.max_epochs
+        steps_per_epoch = total_steps // max_epochs if max_epochs else 1
+
+        result = _configure_optimizers(
+            self.optim_settings,
+            self.model,
+            steps_per_epoch=steps_per_epoch,
+        )
+
+        # Store interval metadata for manual stepping logic.
+        self._scheduler_intervals: list[str | None] = []
+        for entry in result:
+            lr_sched = entry.get("lr_scheduler")
+            if lr_sched is not None:
+                self._scheduler_intervals.append(lr_sched.get("interval", "step"))
+            else:
+                self._scheduler_intervals.append(None)
+
+        return result
 
     # ------------------------------------------------------------------
     # Training
@@ -114,27 +143,62 @@ class LipsLightningModule(LightningModule):
             self._norm_ratio_sums[name] += ratio
             self._norm_ratio_counts[name] += 1
 
-        # LR scheduler step
-        self._step_schedulers()
+        # LR scheduler step (step-level only; epoch-level in on_train_epoch_end)
+        self._step_schedulers_by_interval("step")
+
+        # Log current learning rate for monitoring
+        self._log_learning_rates()
 
         self.log(
-            "train/loss", loss,
-            on_step=True, on_epoch=True, prog_bar=True, logger=True,
+            "train/loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
         )
         return {"train_loss": loss}
 
-    def _step_schedulers(self):
-        """Step all LR schedulers (handles nested lists / dicts)."""
+    # ------------------------------------------------------------------
+    # Scheduler helpers
+    # ------------------------------------------------------------------
+
+    def _get_schedulers_with_intervals(self):
+        """Return list of ``(scheduler, interval)`` tuples."""
         schedulers = self.lr_schedulers()
         if schedulers is None:
-            return
+            return []
         if not isinstance(schedulers, (list, tuple)):
             schedulers = [schedulers]
-        for sch in schedulers:
+
+        intervals = getattr(self, "_scheduler_intervals", [])
+        result = []
+        for idx, sch in enumerate(schedulers):
             if isinstance(sch, dict):
                 sch = sch.get("scheduler")
-            if sch is not None:
+            interval = intervals[idx] if idx < len(intervals) else "step"
+            result.append((sch, interval))
+        return result
+
+    def _step_schedulers_by_interval(self, interval: str):
+        """Step only schedulers whose interval matches *interval*."""
+        for sch, sch_interval in self._get_schedulers_with_intervals():
+            if sch is not None and sch_interval == interval:
                 sch.step()
+
+    def _log_learning_rates(self):
+        """Log the current LR of each optimizer for WandB monitoring."""
+        optimizers = self.optimizers()
+        if not isinstance(optimizers, (list, tuple)):
+            optimizers = [optimizers]
+        for opt_idx, opt in enumerate(optimizers):
+            for pg_idx, pg in enumerate(opt.param_groups):
+                tag = (
+                    f"train/lr_opt{opt_idx}_pg{pg_idx}"
+                    if len(optimizers) > 1
+                    else "train/lr"
+                )
+                self.log(tag, pg["lr"], on_step=True, on_epoch=False, logger=True)
 
     # ------------------------------------------------------------------
     # Validation
@@ -149,13 +213,32 @@ class LipsLightningModule(LightningModule):
         top1_acc = acc["top1_acc"]
         top5_acc = acc["top5_acc"]
 
-        self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val/accuracy", top1_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val/top1_acc", top1_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log(
+            "val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True
+        )
+        self.log(
+            "val/accuracy",
+            top1_acc,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            "val/top1_acc",
+            top1_acc,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
         self.log("val/top5_acc", top5_acc, on_step=False, on_epoch=True, logger=True)
         self.log(
-            "val/lips_bound", self.model.get_lips_bound(),
-            on_step=False, on_epoch=True, logger=True,
+            "val/lips_bound",
+            self.model.get_lips_bound(),
+            on_step=False,
+            on_epoch=True,
+            logger=True,
         )
         return {"val_loss": loss, "val_accuracy": top1_acc, "val_top5_acc": top5_acc}
 
@@ -170,11 +253,13 @@ class LipsLightningModule(LightningModule):
         correct = pred.eq(target.view_as(pred)).sum().item()
         loss = self.compute_loss(output, target)
 
-        self._test_step_outputs.append({
-            "test_loss": loss,
-            "correct": correct,
-            "num_samples": target.shape[0],
-        })
+        self._test_step_outputs.append(
+            {
+                "test_loss": loss,
+                "correct": correct,
+                "num_samples": target.shape[0],
+            }
+        )
 
         self.log("test/loss", loss, on_step=False, on_epoch=True, logger=True)
         return {"test_loss": loss, "correct": correct, "num_samples": target.shape[0]}
@@ -196,14 +281,19 @@ class LipsLightningModule(LightningModule):
     # ------------------------------------------------------------------
 
     def on_train_epoch_end(self):
-        """Log per-layer norm-change ratio metrics."""
+        """Step epoch-level LR schedulers and log per-layer norm-change ratio metrics."""
+        self._step_schedulers_by_interval("epoch")
+
         for name in list(self._norm_ratio_sums.keys()):
             count = self._norm_ratio_counts[name]
             if count > 0:
                 avg_ratio = self._norm_ratio_sums[name] / count
                 self.log(
-                    f"train/norm_ratio/{name}", avg_ratio,
-                    on_step=False, on_epoch=True, logger=True,
+                    f"train/norm_ratio/{name}",
+                    avg_ratio,
+                    on_step=False,
+                    on_epoch=True,
+                    logger=True,
                 )
             self._norm_ratio_sums[name] = 0.0
             self._norm_ratio_counts[name] = 0

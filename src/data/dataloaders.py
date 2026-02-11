@@ -1,6 +1,5 @@
 import os
-from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader
@@ -114,8 +113,12 @@ def get_datamodule(config: dict) -> LightningDataModule:
 
     # Keys accepted by ImageNetDataModule
     _IMAGENET_KEYS = {
-        "data_dir", "batch_size", "num_workers",
-        "pin_memory", "persistent_workers", "image_size",
+        "data_dir",
+        "batch_size",
+        "num_workers",
+        "pin_memory",
+        "persistent_workers",
+        "image_size",
     }
 
     if dataset_name == "imagenet":

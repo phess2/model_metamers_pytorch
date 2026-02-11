@@ -4,7 +4,7 @@
         "num_classes": 1000,
         "w_max": 0.0,
         "projection": null,
-        "max_epochs": 1,
+        "max_epochs": 10,
         "val_check_interval": 0.25
     },
     "data_settings": {

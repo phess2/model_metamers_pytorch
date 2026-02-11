@@ -9,19 +9,31 @@ from ..layers.LipsLayers import LipsConv2d, LipsLinear
 # Helper constructors
 # ---------------------------------------------------------------------------
 
+
 def conv3x3(in_planes, out_planes, stride=1, w_max=1.0, projection=None):
     """3x3 Lipschitz convolution with padding."""
     return LipsConv2d(
-        in_planes, out_planes, kernel_size=3, stride=stride, padding=1,
-        bias=False, w_max=w_max, projection=projection,
+        in_planes,
+        out_planes,
+        kernel_size=3,
+        stride=stride,
+        padding=1,
+        bias=False,
+        w_max=w_max,
+        projection=projection,
     )
 
 
 def conv1x1(in_planes, out_planes, stride=1, w_max=1.0, projection=None):
     """1x1 Lipschitz convolution."""
     return LipsConv2d(
-        in_planes, out_planes, kernel_size=1, stride=stride, bias=False,
-        w_max=w_max, projection=projection,
+        in_planes,
+        out_planes,
+        kernel_size=1,
+        stride=stride,
+        bias=False,
+        w_max=w_max,
+        projection=projection,
     )
 
 
@@ -29,15 +41,24 @@ def conv1x1(in_planes, out_planes, stride=1, w_max=1.0, projection=None):
 # Residual blocks
 # ---------------------------------------------------------------------------
 
+
 class LipsBasicBlock(nn.Module):
     expansion = 1
 
     def __init__(
-        self, inplanes, planes, stride=1, downsample=None,
-        last_block=False, w_max=1.0, projection=None,
+        self,
+        inplanes,
+        planes,
+        stride=1,
+        downsample=None,
+        last_block=False,
+        w_max=1.0,
+        projection=None,
     ):
         super().__init__()
-        self.conv1 = conv3x3(inplanes, planes, stride=stride, w_max=w_max, projection=projection)
+        self.conv1 = conv3x3(
+            inplanes, planes, stride=stride, w_max=w_max, projection=projection
+        )
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=False)
         self.conv2 = conv3x3(planes, planes, w_max=w_max, projection=projection)
@@ -71,15 +92,25 @@ class LipsBottleneck(nn.Module):
     expansion = 4
 
     def __init__(
-        self, inplanes, planes, stride=1, downsample=None,
-        last_block=False, w_max=1.0, projection=None,
+        self,
+        inplanes,
+        planes,
+        stride=1,
+        downsample=None,
+        last_block=False,
+        w_max=1.0,
+        projection=None,
     ):
         super().__init__()
         self.conv1 = conv1x1(inplanes, planes, w_max=w_max, projection=projection)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = conv3x3(planes, planes, stride=stride, w_max=w_max, projection=projection)
+        self.conv2 = conv3x3(
+            planes, planes, stride=stride, w_max=w_max, projection=projection
+        )
         self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = conv1x1(planes, planes * self.expansion, w_max=w_max, projection=projection)
+        self.conv3 = conv1x1(
+            planes, planes * self.expansion, w_max=w_max, projection=projection
+        )
         self.bn3 = nn.BatchNorm2d(planes * self.expansion)
         self.relu = nn.ReLU(inplace=False)
         self.downsample = downsample
@@ -114,6 +145,7 @@ class LipsBottleneck(nn.Module):
 # ---------------------------------------------------------------------------
 # Full ResNet model
 # ---------------------------------------------------------------------------
+
 
 class LipsResNet(LipsModel):
     """
@@ -151,8 +183,14 @@ class LipsResNet(LipsModel):
 
         self.inplanes = 64
         self.conv1 = LipsConv2d(
-            3, 64, kernel_size=7, stride=2, padding=3, bias=False,
-            w_max=w_max, projection=projection,
+            3,
+            64,
+            kernel_size=7,
+            stride=2,
+            padding=3,
+            bias=False,
+            w_max=w_max,
+            projection=projection,
         )
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=False)
@@ -164,8 +202,10 @@ class LipsResNet(LipsModel):
         self.layer4 = self._make_layer(block_class, 512, layer_sizes[3], stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = LipsLinear(
-            512 * block_class.expansion, num_classes,
-            w_max=w_max, projection=projection,
+            512 * block_class.expansion,
+            num_classes,
+            w_max=w_max,
+            projection=projection,
         )
 
         # Weight initialisation
@@ -194,8 +234,11 @@ class LipsResNet(LipsModel):
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 conv1x1(
-                    self.inplanes, planes * block.expansion, stride=stride,
-                    w_max=self.w_max, projection=self.projection,
+                    self.inplanes,
+                    planes * block.expansion,
+                    stride=stride,
+                    w_max=self.w_max,
+                    projection=self.projection,
                 ),
                 nn.BatchNorm2d(planes * block.expansion),
             )
@@ -203,8 +246,12 @@ class LipsResNet(LipsModel):
         layers = []
         layers.append(
             block(
-                self.inplanes, planes, stride=stride, downsample=downsample,
-                w_max=self.w_max, projection=self.projection,
+                self.inplanes,
+                planes,
+                stride=stride,
+                downsample=downsample,
+                w_max=self.w_max,
+                projection=self.projection,
             )
         )
         self.inplanes = planes * block.expansion
@@ -212,8 +259,11 @@ class LipsResNet(LipsModel):
             is_last = b == (blocks - 1)
             layers.append(
                 block(
-                    self.inplanes, planes, last_block=is_last,
-                    w_max=self.w_max, projection=self.projection,
+                    self.inplanes,
+                    planes,
+                    last_block=is_last,
+                    w_max=self.w_max,
+                    projection=self.projection,
                 )
             )
         return SequentialWithArgs(*layers)

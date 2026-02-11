@@ -8,7 +8,7 @@ To register a new model (e.g. an audio architecture), add it to
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Type
+from typing import Dict, Type
 
 from .base import LipsModel
 
@@ -35,8 +35,7 @@ def get_model(config: dict) -> LipsModel:
     model_name = config["model_name"]
     if model_name not in _MODEL_REGISTRY:
         raise ValueError(
-            f"Unknown model '{model_name}'. "
-            f"Available: {sorted(_MODEL_REGISTRY.keys())}"
+            f"Unknown model '{model_name}'. Available: {sorted(_MODEL_REGISTRY.keys())}"
         )
     cls = _MODEL_REGISTRY[model_name]
     hparams = config.get("hparams", {})
@@ -62,6 +61,7 @@ def get_model(config: dict) -> LipsModel:
 # ---------------------------------------------------------------------------
 # Auto-register built-in models
 # ---------------------------------------------------------------------------
+
 
 def _register_builtins() -> None:
     from .vision.lipsalexnet import LipsAlexNet
