@@ -134,6 +134,11 @@ def soft_cap_coupling(w_max, wd, max_update_norm):
 #     return batch_project(M, lambda x: _orthogonalize(x, **kwargs))
 
 
+def _no_projection(projection, w_max):
+    """True when projection is disabled: either projection is None or w_max is 0."""
+    return projection is None or w_max == 0
+
+
 class LipsLinear(nn.Module):
     def __init__(
         self, in_features, out_features, bias=False, w_max=1.0, projection=None
@@ -147,12 +152,18 @@ class LipsLinear(nn.Module):
         self.projection = (
             projection  # None | 'orthogonalize' | 'spectral_normalize' | callable
         )
-        self.scale = (
-            torch.sqrt(torch.tensor(self.out_features / self.in_features)) * self.w_max
-        )
-        self.lips_weight_scale = (
-            self.scale / self.w_max
-        )  # the scale of the weight in the lipschitz bound doesn't change with w_max
+        if _no_projection(projection, w_max):
+            # Keep sqrt(out/in) for RMS -> RMS norm consistency; no w_max scaling
+            self.scale = torch.sqrt(torch.tensor(self.out_features / self.in_features))
+            self.lips_weight_scale = self.scale
+        else:
+            self.scale = (
+                torch.sqrt(torch.tensor(self.out_features / self.in_features))
+                * self.w_max
+            )
+            self.lips_weight_scale = (
+                self.scale / self.w_max
+            )  # the scale of the weight in the lipschitz bound doesn't change with w_max
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -173,7 +184,7 @@ class LipsLinear(nn.Module):
                    relative to the allowed Lipschitz bound. Returns 0.0 if
                    projection is None or not applicable.
         """
-        if self.projection is None:
+        if _no_projection(self.projection, self.w_max):
             return 0.0
 
         # Cache weight before projection
@@ -279,13 +290,20 @@ class LipsConv2d(nn.Module):
         self.projection = (
             projection  # None | 'orthogonalize' | 'spectral_normalize' | callable
         )
-        self.scale = (
-            torch.sqrt(torch.tensor(self.out_channels / self.in_channels)) * self.w_max
-        )
-        self.scale /= self.kernel_size[0] * self.kernel_size[1]
-        self.lips_weight_scale = (
-            self.scale / self.w_max
-        )  # the scale of the weight in the lipschitz bound doesn't change with w_max
+        if _no_projection(projection, w_max):
+            # Keep sqrt(out/in) / (kh*kw) for RMS -> RMS norm consistency; no w_max scaling
+            self.scale = torch.sqrt(torch.tensor(self.out_channels / self.in_channels))
+            self.scale /= self.kernel_size[0] * self.kernel_size[1]
+            self.lips_weight_scale = self.scale
+        else:
+            self.scale = (
+                torch.sqrt(torch.tensor(self.out_channels / self.in_channels))
+                * self.w_max
+            )
+            self.scale /= self.kernel_size[0] * self.kernel_size[1]
+            self.lips_weight_scale = (
+                self.scale / self.w_max
+            )  # the scale of the weight in the lipschitz bound doesn't change with w_max
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -315,7 +333,7 @@ class LipsConv2d(nn.Module):
                    relative to the allowed Lipschitz bound. Returns 0.0 if
                    projection is None or not applicable.
         """
-        if self.projection is None:
+        if _no_projection(self.projection, self.w_max):
             return 0.0
 
         # Cache weight before projection

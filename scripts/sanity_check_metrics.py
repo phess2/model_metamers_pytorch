@@ -60,6 +60,62 @@ def test_project_returns_ratio():
     print("   PASSED: Returns 0.0 when projection is None")
 
 
+def test_w_max_zero_no_projection():
+    """With w_max=0 or projection=None, no projection is applied; init and get_lips_bound stay valid."""
+    print("\n" + "=" * 60)
+    print("Testing w_max=0 / no-projection mode")
+    print("=" * 60)
+
+    # w_max=0, projection=None: scale = sqrt(out/in), lips_weight_scale = scale (RMS->RMS)
+    linear = LipsLinear(128, 64, w_max=0.0, projection=None)
+    expected_scale = (64 / 128) ** 0.5
+    assert abs(linear.scale.item() - expected_scale) < 1e-6, (
+        "LipsLinear scale should be sqrt(out/in) when no projection"
+    )
+    assert linear.lips_weight_scale.item() == linear.scale.item(), (
+        "LipsLinear lips_weight_scale should equal scale when no projection"
+    )
+    assert not torch.allclose(linear.weight, torch.zeros_like(linear.weight)), (
+        "LipsLinear weights must not be zero (orthogonal init with scale)"
+    )
+    assert not torch.isnan(linear.weight).any(), "LipsLinear weights must not be NaN"
+    ratio = linear.project_()
+    assert ratio == 0.0, "project_() should return 0.0 when w_max=0"
+    bound = linear.get_lips_bound()
+    assert not torch.isnan(bound).any() and not torch.isinf(bound).any(), (
+        "get_lips_bound() must be finite when no projection"
+    )
+    print("   PASSED: LipsLinear with w_max=0 has valid init, project_ returns 0, bound finite")
+
+    conv = LipsConv2d(4, 16, kernel_size=3, w_max=0.0, projection=None)
+    expected_conv_scale = (16 / 4) ** 0.5 / (3 * 3)
+    assert abs(conv.scale.item() - expected_conv_scale) < 1e-6, (
+        "LipsConv2d scale should be sqrt(oc/ic)/(kh*kw) when no projection"
+    )
+    assert conv.lips_weight_scale.item() == conv.scale.item(), (
+        "LipsConv2d lips_weight_scale should equal scale when no projection"
+    )
+    assert not torch.isnan(conv.weight).any(), "LipsConv2d weights must not be NaN"
+    ratio = conv.project_()
+    assert ratio == 0.0, "project_() should return 0.0 when w_max=0"
+    bound = conv.get_lips_bound()
+    assert not torch.isnan(bound).any() and not torch.isinf(bound).any(), (
+        "get_lips_bound() must be finite when no projection"
+    )
+    print("   PASSED: LipsConv2d with w_max=0 has valid init, project_ returns 0, bound finite")
+
+    # projection=None with w_max>0 also uses no-projection mode (scale = sqrt(out/in), lips_weight_scale = scale)
+    linear2 = LipsLinear(32, 16, w_max=2.0, projection=None)
+    expected_scale2 = (16 / 32) ** 0.5
+    assert abs(linear2.scale.item() - expected_scale2) < 1e-6 and abs(
+        linear2.lips_weight_scale.item() - linear2.scale.item()
+    ) < 1e-6, (
+        "LipsLinear with projection=None should use scale=sqrt(out/in), lips_weight_scale=scale"
+    )
+    assert linear2.project_() == 0.0
+    print("   PASSED: projection=None with w_max>0 uses no-projection init")
+
+
 def test_topk_accuracy():
     """Test that top-k accuracy calculation works correctly."""
     print("\n" + "=" * 60)
@@ -207,6 +263,7 @@ def main():
     print("=" * 60)
 
     test_project_returns_ratio()
+    test_w_max_zero_no_projection()
     test_topk_accuracy()
     test_module_integration()
 
