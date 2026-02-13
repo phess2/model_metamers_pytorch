@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import socket
+import warnings
 from argparse import ArgumentParser
 
 import torch
@@ -26,9 +27,13 @@ from src.training.losses import get_loss_fn
 from src.training.module import LipsLightningModule
 from src.utils.config import apply_cli_overrides, load_config
 
-# Use only the new API; do not set torch.backends.cuda/cudnn.allow_tf32
-# (legacy mix causes RuntimeError).
 torch.set_float32_matmul_precision("medium")
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*resuming from a checkpoint that ended before the epoch ended.*",
+    category=UserWarning,
+)
 
 hostname = socket.gethostname()
 
@@ -40,55 +45,70 @@ def run_train(args: ArgumentParser):
     config_path = pathlib.Path(args.config)
     print(f"Loading config from {config_path}")
 
-    # ---- Config --------------------------------------------------------
     config = load_config(config_path)
     apply_cli_overrides(config, args)
 
-    # ---- Model ---------------------------------------------------------
     model = get_model(config)
     print(f"Model: {model}")
 
-    # ---- Data ----------------------------------------------------------
     datamodule = get_datamodule(config)
 
-    # ---- Loss ----------------------------------------------------------
     loss_fn = get_loss_fn(config)
 
-    # ---- Lightning module ----------------------------------------------
     module = LipsLightningModule(model, config, loss_fn=loss_fn)
 
-    # ---- Checkpointing -------------------------------------------------
     exp_root = args.exp_dir / config_path.stem
     checkpoint_dir = exp_root / "checkpoints"
     if not args.no_checkpoints:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_paths = sorted(checkpoint_dir.glob("*.ckpt"), key=os.path.getctime)
-    else:
-        ckpt_paths = []
 
     ckpt_path = None
     if args.resume_training:
         if args.ckpt_path:
             ckpt_path = args.ckpt_path
-        elif ckpt_paths:
-            ckpt_path = str(ckpt_paths[-1])
+        else:
+            # Prefer last.ckpt (always-updated resume target)
+            last_ckpt = checkpoint_dir / "last.ckpt"
+            if last_ckpt.exists():
+                ckpt_path = str(last_ckpt)
+            else:
+                # Fallback: latest checkpoint by creation time
+                ckpt_paths = sorted(checkpoint_dir.glob("*.ckpt"), key=os.path.getctime)
+                if ckpt_paths:
+                    ckpt_path = str(ckpt_paths[-1])
+        if ckpt_path:
+            print(f"Resuming from checkpoint: {ckpt_path}")
+        else:
+            print(
+                "WARNING: --resume_training set but no checkpoint found. "
+                "Starting fresh."
+            )
 
-    run_idx = len(ckpt_paths)
+    wandb_id_file = exp_root / "wandb_run_id.txt"
 
-    # ---- WandB name ----------------------------------------------------
-    if args.lr is not None:
-        lr_sci = f"{args.lr:.0e}"
-        lr_formatted = re.sub(r"e([+-])0+(\d)", r"e\1\2", lr_sci)
-        wandb_name = f"{config_path.stem}_lr{lr_formatted}_{run_idx}"
+    if args.resume_training and wandb_id_file.exists():
+        wandb_run_id = wandb_id_file.read_text().strip()
+        wandb_logger = WandbLogger(
+            project="LipsVision",
+            log_model=False,
+            id=wandb_run_id,
+            resume="must",
+        )
     else:
-        wandb_name = f"{config_path.stem}_{run_idx}"
-
-    # ---- Logger & callbacks --------------------------------------------
-    wandb_logger = WandbLogger(
-        project="LipsVision",
-        log_model=False,
-        name=wandb_name,
-    )
+        if args.lr is not None:
+            lr_sci = f"{args.lr:.0e}"
+            lr_formatted = re.sub(r"e([+-])0+(\d)", r"e\1\2", lr_sci)
+            wandb_name = f"{config_path.stem}_lr{lr_formatted}"
+        else:
+            wandb_name = config_path.stem
+        wandb_logger = WandbLogger(
+            project="LipsVision",
+            log_model=False,
+            name=wandb_name,
+        )
+        # Persist the run ID so future --resume_training picks it up.
+        exp_root.mkdir(parents=True, exist_ok=True)
+        wandb_id_file.write_text(wandb_logger.experiment.id)
     # early_stop_callback = EarlyStopping(
     #     monitor="val/loss", mode="min", patience=10,
     # )
@@ -102,12 +122,12 @@ def run_train(args: ArgumentParser):
             save_top_k=1,
             save_last=True,
             dirpath=checkpoint_dir,
-            filename="{epoch:02d}-{val/loss:.4f}",
+            filename="epoch{epoch:02d}-val_loss{val/loss:.4f}",
+            auto_insert_metric_name=False,
         )
         # callbacks = [checkpoint_callback, early_stop_callback]
         callbacks = [checkpoint_callback]
 
-    # ---- Trainer -------------------------------------------------------
     hparams = config.get("hparams", {})
     trainer = Trainer(
         precision="32",

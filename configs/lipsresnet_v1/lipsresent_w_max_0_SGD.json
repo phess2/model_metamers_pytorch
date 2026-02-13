@@ -2,8 +2,8 @@
     "model_name": "lipsresnet",
     "hparams": {
         "num_classes": 1000,
-        "w_max": 2.0,
-        "projection": "spectral_normalize",
+        "w_max": 0.0,
+        "projection": null,
         "max_epochs": 90,
         "val_check_interval": 0.25,
         "block_type": "basic",
@@ -19,7 +19,7 @@
         "optimizer": {
             "name": "SGD",
             "kwargs": {
-                "lr": 0.01,
+                "lr": 0.2,
                 "momentum": 0.9,
                 "weight_decay": 0.0001
             },
