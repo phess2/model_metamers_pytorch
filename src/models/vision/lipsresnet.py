@@ -223,11 +223,33 @@ class LipsResNet(LipsModel):
                 elif isinstance(m, LipsBasicBlock):
                     nn.init.constant_(m.bn2.weight, 0)
 
+    metamer_layers = [
+        "conv1_relu1",
+        "layer1",
+        "layer2",
+        "layer3",
+        "layer4",
+        "final",
+        # fake_relu variants
+        "conv1_relu1_fake_relu",
+        "layer1_fake_relu",
+        "layer2_fake_relu",
+        "layer3_fake_relu",
+        "layer4_fake_relu",
+    ]
+
     def __str__(self):
         return (
             f"LipsResNet(num_classes={self.num_classes}, "
             f"w_max={self.w_max}, projection={self.projection})"
         )
+
+    def forward_with_representations(self, x, fake_relu=False):
+        """Return ``(logits, all_outputs)`` with all intermediate activations."""
+        final, _pre_out, all_outputs = self.forward(
+            x, with_latent=True, fake_relu=fake_relu
+        )
+        return final, all_outputs
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None

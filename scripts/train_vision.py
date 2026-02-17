@@ -37,12 +37,14 @@ warnings.filterwarnings(
 
 hostname = socket.gethostname()
 
+CONFIG_ROOT = pathlib.Path("configs").resolve()
+
 
 def run_train(args: ArgumentParser):
     seed_everything(args.seed)
 
     args.exp_dir = pathlib.Path(args.exp_dir)
-    config_path = pathlib.Path(args.config)
+    config_path = pathlib.Path(args.config).resolve()
     print(f"Loading config from {config_path}")
 
     config = load_config(config_path)
@@ -57,7 +59,11 @@ def run_train(args: ArgumentParser):
 
     module = LipsLightningModule(model, config, loss_fn=loss_fn)
 
-    exp_root = args.exp_dir / config_path.stem
+    try:
+        rel = config_path.relative_to(CONFIG_ROOT)
+        exp_root = args.exp_dir / rel.with_suffix("")
+    except ValueError:
+        exp_root = args.exp_dir / config_path.stem
     checkpoint_dir = exp_root / "checkpoints"
     if not args.no_checkpoints:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -154,7 +160,9 @@ def run_train(args: ArgumentParser):
 def main():
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--config", type=str, default="configs/lipsalexnet_test.json")
+    parser.add_argument(
+        "--config", type=str, default="configs/vision/lipsalexnet_test.json"
+    )
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--exp_dir", type=str, default="experiments")

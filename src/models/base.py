@@ -47,3 +47,23 @@ class LipsModel(nn.Module):
         for _name, module in self.get_lips_layers():
             bound *= module.get_lips_bound()
         return bound
+
+    # ------------------------------------------------------------------
+    # Metamer-generation interface
+    # ------------------------------------------------------------------
+
+    #: Layer names recommended for metamer generation.  Subclasses should
+    #: override this with a list of keys that ``forward_with_representations``
+    #: can return.
+    metamer_layers: list = []
+
+    def forward_with_representations(self, x, fake_relu=False):
+        """Return ``(logits, dict[str, Tensor])`` with all intermediate
+        activations.  Subclasses must implement this.
+        """
+        raise NotImplementedError
+
+    @classmethod
+    def list_representation_layers(cls):
+        """Return the list of recommended metamer-generation layers."""
+        return list(cls.metamer_layers)

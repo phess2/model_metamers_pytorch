@@ -122,11 +122,37 @@ class LipsAlexNet(LipsModel):
         self.fake_relu_dict["fc0_relu"] = FakeReLUM()
         self.fake_relu_dict["fc1_relu"] = FakeReLUM()
 
+    metamer_layers = [
+        "relu0",
+        "relu1",
+        "relu2",
+        "relu3",
+        "relu4",
+        "fc0_relu",
+        "fc1_relu",
+        "final",
+        # fake_relu variants
+        "relu0_fake_relu",
+        "relu1_fake_relu",
+        "relu2_fake_relu",
+        "relu3_fake_relu",
+        "relu4_fake_relu",
+        "fc0_relu_fake_relu",
+        "fc1_relu_fake_relu",
+    ]
+
     def __str__(self):
         return (
             f"LipsAlexNet(num_classes={self.num_classes}, "
             f"w_max={self.w_max}, projection={self.projection})"
         )
+
+    def forward_with_representations(self, x, fake_relu=False):
+        """Return ``(logits, all_outputs)`` with all intermediate activations."""
+        logits, all_outputs = self.forward(
+            x, fake_relu=fake_relu, return_all_outputs=True
+        )
+        return logits, all_outputs
 
     def forward(
         self,

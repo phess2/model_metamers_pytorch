@@ -39,10 +39,24 @@ class ImageNetFolder(datasets.ImageFolder):
 
 
 def get_vision_dataset(
-    dataset_name: str, root_dir: Union[str, Path], image_size: int, stage: str
+    dataset_name: str,
+    root_dir: Union[str, Path],
+    image_size: int,
+    stage: str,
+    raw: bool = False,
 ) -> datasets.ImageFolder:
+    """Load a vision dataset.
+
+    Parameters
+    ----------
+    raw : bool
+        If ``True`` the validation transform returns pixel-space ``[0, 1]``
+        tensors without ImageNet normalisation (used for metamer generation).
+    """
     if dataset_name == "imagenet":
-        train_transform, val_transform = get_vision_transform(dataset_name, image_size)
+        train_transform, val_transform = get_vision_transform(
+            dataset_name, image_size, raw=raw
+        )
         if stage == "validate":
             return ImageNetFolder(root_dir, "val", val_transform)
         else:
