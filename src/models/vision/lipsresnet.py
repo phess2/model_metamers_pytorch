@@ -291,7 +291,6 @@ class LipsResNet(LipsModel):
         return SequentialWithArgs(*layers)
 
     def forward(self, x, with_latent=False, fake_relu=False, no_relu=False):
-        del no_relu
         all_outputs = {}
         all_outputs["input_after_preproc"] = x
 

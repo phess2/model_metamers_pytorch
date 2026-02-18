@@ -43,22 +43,16 @@ class ImageNetDataModule(LightningDataModule):
                 )
                 self.train_dataset = train_dataset
                 self.val_dataset = val_dataset
-            else:
-                pass
         elif stage == "validate":
             if self.val_dataset is None:
                 self.val_dataset = get_vision_dataset(
                     "imagenet", self.data_dir, self.image_size, stage
                 )
-            else:
-                pass
         elif stage == "test":
             if self.test_dataset is None:
                 self.test_dataset = get_vision_dataset(
                     "imagenet", self.data_dir, self.image_size, "validate"
                 )
-            else:
-                pass
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

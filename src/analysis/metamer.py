@@ -67,25 +67,19 @@ def load_model_from_checkpoint(
         if k.startswith("model.")
     }
 
-    # Remap keys if they're missing the "features." prefix (for older checkpoints)
-    # Check if we have keys like "0.weight" that should be "features.0.weight"
+    # Remap keys missing "features." prefix (for older checkpoints)
     remapped_state_dict = {}
     for key, value in state_dict.items():
-        # Check if key matches pattern like "0.weight", "3.bias", etc.
-        # and doesn't already have a prefix like "features." or "classifier."
         if "." in key and not any(
             key.startswith(prefix)
             for prefix in ["features.", "classifier.", "fake_relu_dict", "avgpool"]
         ):
             parts = key.split(".", 1)
             if len(parts) == 2 and parts[0].isdigit():
-                # This is a numeric index key - check if it should be in features
                 idx = int(parts[0])
-                # Based on LipsAlexNet structure: indices 0, 3, 6, 8, 10 are in features
-                # (these correspond to LipsConv2d layers)
+                # LipsAlexNet features indices: 0, 3, 6, 8, 10
                 if idx in [0, 3, 6, 8, 10]:
-                    remapped_key = f"features.{key}"
-                    remapped_state_dict[remapped_key] = value
+                    remapped_state_dict[f"features.{key}"] = value
                     continue
         remapped_state_dict[key] = value
 
