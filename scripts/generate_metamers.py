@@ -134,6 +134,24 @@ def main():
         default=0.5,
         help="Mean of initial noise (0.5 = gray)",
     )
+    parser.add_argument(
+        "--lambda_tv",
+        type=float,
+        default=0.0,
+        help="Weight for TV smoothness regularizer (e.g. 5e-6, 5e-5, 5e-4)",
+    )
+    parser.add_argument(
+        "--lambda_range",
+        type=float,
+        default=0.0,
+        help="Weight for Lp range regularizer (e.g. 0.005)",
+    )
+    parser.add_argument(
+        "--range_norm_p",
+        type=int,
+        default=6,
+        help="Norm order p for the range regularizer (default 6)",
+    )
 
     args = parser.parse_args()
 
@@ -208,6 +226,9 @@ def main():
             lr_decay=args.lr_decay,
             fake_relu=fake_relu,
             loss_type=args.loss_type,
+            lambda_tv=args.lambda_tv,
+            lambda_range=args.lambda_range,
+            range_norm_p=args.range_norm_p,
             noise_scale=args.noise_scale,
             noise_mean=args.noise_mean,
             device=args.device,

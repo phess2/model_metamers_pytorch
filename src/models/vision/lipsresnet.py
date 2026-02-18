@@ -223,20 +223,20 @@ class LipsResNet(LipsModel):
                 elif isinstance(m, LipsBasicBlock):
                     nn.init.constant_(m.bn2.weight, 0)
 
-    metamer_layers = [
-        "conv1_relu1",
-        "layer1",
-        "layer2",
-        "layer3",
-        "layer4",
-        "final",
-        # fake_relu variants
-        "conv1_relu1_fake_relu",
-        "layer1_fake_relu",
-        "layer2_fake_relu",
-        "layer3_fake_relu",
-        "layer4_fake_relu",
-    ]
+        self.metamer_layers = [
+            "conv1_relu1",
+            "layer1",
+            "layer2",
+            "layer3",
+            "layer4",
+            "final",
+            # fake_relu variants
+            "conv1_relu1_fake_relu",
+            "layer1_fake_relu",
+            "layer2_fake_relu",
+            "layer3_fake_relu",
+            "layer4_fake_relu",
+        ]
 
     def __str__(self):
         return (

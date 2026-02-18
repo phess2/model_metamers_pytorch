@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import torch
 from torch import Tensor
 
+from src.analysis.regularizers import range_regularizer, total_variation_loss
 from src.models.registry import get_model
 from src.utils.config import load_config
 
@@ -153,6 +154,20 @@ class MetamerGenerator:
         One of ``"normalized_l2"``, ``"l2"``, ``"cosine"``.
     clamp_range : tuple[float, float]
         Range to clamp the metamer tensor to after each step.
+    lambda_tv : float
+        Weight for the total-variation (smoothness) regularizer.
+        ``0`` disables it.  Typical values: 5e-6 (early layers),
+        5e-5 (mid), 5e-4 (later layers).
+    lambda_range : float
+        Weight for the Lp range regularizer.  ``0`` disables it.
+        Typical value: 0.005.
+    range_norm_p : int
+        Norm order for the range regularizer (default 6).
+    normalize_fn : callable, optional
+        Function that maps the raw optimisation variable to
+        model-normalised space.  Regularizers are evaluated on the
+        normalised signal.  Defaults to ImageNet normalisation;
+        override for audio or other modalities.
     noise_scale : float
         Scale of the initial Gaussian noise (default 0.05).
     noise_mean : float
@@ -172,6 +187,10 @@ class MetamerGenerator:
         fake_relu: bool = True,
         loss_type: str = "normalized_l2",
         clamp_range: Tuple[float, float] = (0.0, 1.0),
+        lambda_tv: float = 0.0,
+        lambda_range: float = 0.0,
+        range_norm_p: int = 6,
+        normalize_fn: Optional[Callable[[Tensor], Tensor]] = None,
         noise_scale: float = 0.05,
         noise_mean: float = 0.5,
         device: str = "cuda",
@@ -185,6 +204,12 @@ class MetamerGenerator:
         self.fake_relu = fake_relu
         self.loss_type = loss_type
         self.clamp_range = clamp_range
+        self.lambda_tv = lambda_tv
+        self.lambda_range = lambda_range
+        self.range_norm_p = range_norm_p
+        self.normalize_fn = (
+            normalize_fn if normalize_fn is not None else _normalize_imagenet
+        )
         self.noise_scale = noise_scale
         self.noise_mean = noise_mean
         self.device = device
@@ -204,11 +229,11 @@ class MetamerGenerator:
         """Forward *x* through the model and return the representation at
         ``self.layer_name``.
 
-        *x* should be in **pixel space** ``[0, 1]``; ImageNet normalisation
-        is applied internally before the forward pass.
+        *x* should be in **pixel space** ``[0, 1]``; normalisation
+        is applied internally (via ``normalize_fn``) before the forward pass.
         """
         x = x.to(self.device)
-        x_norm = _normalize_imagenet(x)
+        x_norm = self.normalize_fn(x)
         _logits, all_outputs = self.model.forward_with_representations(
             x_norm, fake_relu=self.fake_relu
         )
@@ -273,12 +298,20 @@ class MetamerGenerator:
             round_losses = []
             for step in range(self.steps_per_round):
                 # Normalise to model input space before forward pass
-                metamer_norm = _normalize_imagenet(metamer)
+                metamer_norm = self.normalize_fn(metamer)
                 _logits, all_outputs = self.model.forward_with_representations(
                     metamer_norm, fake_relu=self.fake_relu
                 )
                 current_rep = all_outputs[self.layer_name]
                 loss = self._loss_fn(current_rep, target_rep)
+
+                # Regularizers (computed on the normalised signal)
+                if self.lambda_tv > 0:
+                    loss = loss + self.lambda_tv * total_variation_loss(metamer_norm)
+                if self.lambda_range > 0:
+                    loss = loss + self.lambda_range * range_regularizer(
+                        metamer_norm, p=self.range_norm_p
+                    )
 
                 # Normalised gradient step (L2Step from reference code)
                 grad = torch.autograd.grad(loss, metamer)[0]
@@ -323,6 +356,9 @@ class MetamerGenerator:
                 "fake_relu": self.fake_relu,
                 "loss_type": self.loss_type,
                 "clamp_range": list(self.clamp_range),
+                "lambda_tv": self.lambda_tv,
+                "lambda_range": self.lambda_range,
+                "range_norm_p": self.range_norm_p,
                 "noise_scale": self.noise_scale,
                 "noise_mean": self.noise_mean,
             },

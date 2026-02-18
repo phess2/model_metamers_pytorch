@@ -13,3 +13,5 @@ experiments/
 .cursorignore
 .cursor/
 .ruff_cache/
+
+pyrightconfig.json
