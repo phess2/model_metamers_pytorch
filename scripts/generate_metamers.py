@@ -100,7 +100,7 @@ def main():
         "--imagenet_subset",
         type=str,
         default="none",
-        choices=["none", "legacy_400_16_val"],
+        choices=["none", "imagenet_400_val"],
         help="Optional ImageNet subset selection mode.",
     )
     parser.add_argument("--exp_dir", type=str, default="experiments")
@@ -232,7 +232,7 @@ def main():
         )
         selected_subset_indices = []
 
-    # ---- Optional legacy subset ------------------------------------
+    # ---- Optional ImageNet subset ----------------------------------
     selected_dataset_indices: list[int] = []
     use_subset_indices = args.imagenet_subset != "none"
     if args.imagenet_subset != "none":
@@ -244,20 +244,20 @@ def main():
             sys.exit(1)
         if args.split != "val":
             print(
-                "ERROR: --imagenet_subset legacy_400_16_val requires --split val.",
+                "ERROR: --imagenet_subset imagenet_400_val requires --split val.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-        if args.imagenet_subset == "legacy_400_16_val":
-            print("Resolving legacy ImageNet subset: legacy_400_16_val")
+        if args.imagenet_subset == "imagenet_400_val":
+            print("Resolving ImageNet subset: imagenet_400_val")
             selected_dataset_indices = selected_subset_indices
             print(
-                f"Resolved {len(selected_dataset_indices)} images for legacy_400_16_val subset."
+                f"Resolved {len(selected_dataset_indices)} images for imagenet_400_val subset."
             )
             if len(selected_dataset_indices) != 400:
                 print(
-                    "ERROR: Expected exactly 400 images in legacy subset, got "
+                    "ERROR: Expected exactly 400 images in imagenet_400_val subset, got "
                     f"{len(selected_dataset_indices)}.",
                     file=sys.stderr,
                 )
@@ -279,12 +279,12 @@ def main():
         if any(i < 0 or i > subset_max_index for i in sample_indices):
             print(
                 "ERROR: At least one requested --indices value is out of range for the "
-                f"legacy subset [0, {subset_max_index}].",
+                f"imagenet_400_val subset [0, {subset_max_index}].",
                 file=sys.stderr,
             )
             sys.exit(1)
         print(
-            "Interpreting requested indices in legacy subset ordering "
+            "Interpreting requested indices in imagenet_400_val ordering "
             f"(size={len(selected_dataset_indices)})."
         )
     else:

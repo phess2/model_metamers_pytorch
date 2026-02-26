@@ -15,23 +15,6 @@ from typing import Dict, Union
 import torch
 from torch import Tensor
 
-# ImageNet de-normalisation constants
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
-
-
-def _denormalize_imagenet(tensor: Tensor) -> Tensor:
-    """Undo ImageNet normalisation: ``x * std + mean``.
-
-    Expects *tensor* of shape ``(C, H, W)`` or ``(1, C, H, W)``.
-    Returns a clipped ``[0, 1]`` tensor.
-    """
-    if tensor.dim() == 4:
-        tensor = tensor.squeeze(0)
-    mean = torch.tensor(IMAGENET_MEAN, device=tensor.device).view(3, 1, 1)
-    std = torch.tensor(IMAGENET_STD, device=tensor.device).view(3, 1, 1)
-    return (tensor * std + mean).clamp(0, 1)
-
 
 def _save_image(tensor: Tensor, path: Path) -> None:
     """Save a ``(C, H, W)`` float tensor in ``[0, 1]`` as a PNG image."""

@@ -186,9 +186,9 @@ def test_topk_accuracy():
 
 
 def test_module_integration():
-    """Test that the modules work with the new metrics."""
+    """Test that current model + Lightning module wiring is valid."""
     print("\n" + "=" * 60)
-    print("Testing LipsAlexNetModule integration")
+    print("Testing LipsLightningModule integration")
     print("=" * 60)
 
     # Create a minimal config
@@ -213,53 +213,29 @@ def test_module_integration():
         },
     }
 
-    try:
-        from src.models.lipsalexnet import LipsAlexNetModule
+    from src.models.registry import get_model
+    from src.training.losses import get_loss_fn
+    from src.training.module import LipsLightningModule
 
-        # This will fail if data_dir doesn't exist, but we can still test
-        # the module structure
-        print("\n   Creating LipsAlexNetModule...")
-        module = LipsAlexNetModule(config)
+    print("\n   Creating model + LipsLightningModule...")
+    model = get_model(config)
+    loss_fn = get_loss_fn(config)
+    module = LipsLightningModule(model=model, config=config, loss_fn=loss_fn)
 
-        # Check that norm_ratio tracking is initialized
-        assert hasattr(module, "norm_ratio_sums"), "Module should have norm_ratio_sums"
-        assert hasattr(module, "norm_ratio_counts"), (
-            "Module should have norm_ratio_counts"
-        )
-        assert hasattr(module, "_lips_layer_names"), (
-            "Module should have _lips_layer_names"
-        )
+    # Check norm ratio tracking containers exist
+    assert hasattr(module, "_norm_ratio_sums"), "Module should track norm ratio sums"
+    assert hasattr(module, "_norm_ratio_counts"), (
+        "Module should track norm ratio counts"
+    )
 
-        print(f"   Tracking {len(module._lips_layer_names)} Lipschitz layers:")
-        for name in module._lips_layer_names:
-            print(f"      - {name}")
-
-        # Run a fake forward pass
-        print("\n   Running forward pass with random data...")
-        x = torch.randn(2, 3, 224, 224)
-        with torch.no_grad():
-            output = module(x)
-        print(f"   Output shape: {output.shape}")
-
-        # Simulate optimizer step + projection
-        print("\n   Simulating projection step...")
-        module.project_step()
-
-        # Check that ratios were accumulated
-        total_ratio = sum(module.norm_ratio_sums.values())
-        total_count = sum(module.norm_ratio_counts.values())
-        print(f"   Total accumulated ratio: {total_ratio:.6f}")
-        print(f"   Total layer updates: {total_count}")
-
-        assert total_count == len(module._lips_layer_names), (
-            "Each layer should have been projected once"
-        )
-
-        print("   PASSED: LipsAlexNetModule integration works")
-
-    except Exception as e:
-        print(f"   WARNING: Could not fully test module integration: {e}")
-        print("   (This may be expected if ImageNet data is not available)")
+    # Run a fake forward pass
+    print("\n   Running forward pass with random data...")
+    x = torch.randn(2, 3, 224, 224)
+    with torch.no_grad():
+        output = module(x)
+    print(f"   Output shape: {output.shape}")
+    assert output.shape[0] == 2, "Forward pass should preserve batch dimension"
+    print("   PASSED: LipsLightningModule integration works")
 
 
 def main():

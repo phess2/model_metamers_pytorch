@@ -1,6 +1,6 @@
-"""Legacy ImageNet subset metadata kept local to src/data."""
+"""ImageNet 400-val subset metadata kept local to src/data."""
 
-LEGACY_400_16_CLASS_ORDER = [
+IMAGENET_400_VAL_CLASS_ORDER = [
     "airplane",
     "bear",
     "bicycle",
@@ -19,7 +19,7 @@ LEGACY_400_16_CLASS_ORDER = [
     "truck",
 ]
 
-LEGACY_400_16_VALIDATION_PATHS = {
+IMAGENET_400_VAL_VALIDATION_PATHS = {
     "airplane": [
         "ilsvrc/val/n02690373/ILSVRC2012_val_00024747.JPEG",
         "ilsvrc/val/n02690373/ILSVRC2012_val_00024108.JPEG",
@@ -4506,7 +4506,7 @@ LEGACY_400_16_VALIDATION_PATHS = {
     ],
 }
 
-LEGACY_400_16_EXCLUDED_VAL_PATHS = {
+IMAGENET_400_VAL_EXCLUDED_PATHS = {
     "ilsvrc/val/n01582220/ILSVRC2012_val_00041135.JPEG",
     "ilsvrc/val/n02089078/ILSVRC2012_val_00031699.JPEG",
     "ilsvrc/val/n02090721/ILSVRC2012_val_00044529.JPEG",

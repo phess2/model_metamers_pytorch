@@ -5,10 +5,10 @@ import numpy as np
 from PIL import Image
 from torchvision import datasets
 
-from src.data.imagenet_legacy_split import (
-    LEGACY_400_16_CLASS_ORDER,
-    LEGACY_400_16_EXCLUDED_VAL_PATHS,
-    LEGACY_400_16_VALIDATION_PATHS,
+from src.data.imagenet_400_val_split import (
+    IMAGENET_400_VAL_CLASS_ORDER,
+    IMAGENET_400_VAL_EXCLUDED_PATHS,
+    IMAGENET_400_VAL_VALIDATION_PATHS,
 )
 from src.data.transforms import get_vision_transform
 
@@ -45,8 +45,8 @@ class ImageNetFolder(datasets.ImageFolder):
         return self.dataset.class_to_idx
 
 
-def _legacy_path_to_dataset_relpath(path_from_validation_paths: str) -> str:
-    """Convert legacy ilsvrc/val paths to ImageFolder relpaths: <wnid>/<filename>."""
+def _validation_path_to_dataset_relpath(path_from_validation_paths: str) -> str:
+    """Convert ilsvrc/val paths to ImageFolder relpaths: <wnid>/<filename>."""
     parts = Path(path_from_validation_paths).parts
     if len(parts) < 4 or parts[0] != "ilsvrc" or parts[1] != "val":
         raise ValueError(
@@ -56,14 +56,14 @@ def _legacy_path_to_dataset_relpath(path_from_validation_paths: str) -> str:
     return str(Path(parts[2]) / parts[3])
 
 
-def _build_legacy_400_16_val_relpaths(data_dir: Path) -> list[str]:
-    """Reconstruct the legacy curated 400-image ImageNet validation pool."""
+def _build_imagenet_400_val_relpaths(data_dir: Path) -> list[str]:
+    """Reconstruct the curated 400-image ImageNet validation pool."""
     rng = np.random.RandomState(517)
     selected_relpaths: list[str] = []
     target_per_class = 25
 
-    for class_name in LEGACY_400_16_CLASS_ORDER:
-        all_candidates = LEGACY_400_16_VALIDATION_PATHS[class_name]
+    for class_name in IMAGENET_400_VAL_CLASS_ORDER:
+        all_candidates = IMAGENET_400_VAL_VALIDATION_PATHS[class_name]
         perm = rng.permutation(len(all_candidates))
         class_total = 0
         check_idx = 0
@@ -72,20 +72,20 @@ def _build_legacy_400_16_val_relpaths(data_dir: Path) -> list[str]:
             if check_idx >= len(perm):
                 raise RuntimeError(
                     f"Could not select {target_per_class} images for class '{class_name}' "
-                    "with legacy filtering constraints."
+                    "with current filtering constraints."
                 )
 
-            candidate_legacy_path = all_candidates[perm[check_idx]]
+            candidate_val_path = all_candidates[perm[check_idx]]
             check_idx += 1
 
-            if candidate_legacy_path in LEGACY_400_16_EXCLUDED_VAL_PATHS:
+            if candidate_val_path in IMAGENET_400_VAL_EXCLUDED_PATHS:
                 continue
 
-            dataset_rel = _legacy_path_to_dataset_relpath(candidate_legacy_path)
+            dataset_rel = _validation_path_to_dataset_relpath(candidate_val_path)
             candidate_abs = data_dir / "val" / dataset_rel
             if not candidate_abs.is_file():
                 raise FileNotFoundError(
-                    "Missing ImageNet validation image for legacy subset reconstruction: "
+                    "Missing ImageNet validation image for imagenet_400_val reconstruction: "
                     f"{candidate_abs}. Expected ImageNet layout under data_dir/val/<wnid>/<image>.JPEG."
                 )
 
@@ -124,13 +124,13 @@ def resolve_imagenet_subset_indices(
     """Return ordered dataset indices for supported ImageNet subset modes."""
     if subset == "none":
         return []
-    if subset != "legacy_400_16_val":
+    if subset != "imagenet_400_val":
         raise ValueError(
             f"ImageNet subset '{subset}' not supported. "
-            "Supported values are 'none' and 'legacy_400_16_val'."
+            "Supported values are 'none' and 'imagenet_400_val'."
         )
 
-    selected_relpaths = _build_legacy_400_16_val_relpaths(Path(data_dir))
+    selected_relpaths = _build_imagenet_400_val_relpaths(Path(data_dir))
     relpath_to_idx = _build_dataset_relpath_to_index(dataset)
 
     selected_indices: list[int] = []
@@ -144,13 +144,13 @@ def resolve_imagenet_subset_indices(
     if unmatched:
         preview = ", ".join(unmatched[:5])
         raise ValueError(
-            f"Could not map {len(unmatched)} legacy subset images to dataset indices. "
+            f"Could not map {len(unmatched)} imagenet_400_val images to dataset indices. "
             f"First unmatched relpaths: {preview}"
         )
 
-    if subset == "legacy_400_16_val" and len(selected_indices) != 400:
+    if subset == "imagenet_400_val" and len(selected_indices) != 400:
         raise ValueError(
-            "Expected exactly 400 resolved indices for legacy_400_16_val, got "
+            "Expected exactly 400 resolved indices for imagenet_400_val, got "
             f"{len(selected_indices)}."
         )
 
