@@ -52,9 +52,10 @@ class LipsModel(nn.Module):
     # Metamer-generation interface
     # ------------------------------------------------------------------
 
-    def __init__(self):
-        self.metamer_layers: list[str] = []
-
+    #: Layer names recommended for metamer generation.  Subclasses should
+    #: override this with a list of keys that ``forward_with_representations``
+    #: can return.
+    metamer_layers: list = []
 
     def forward_with_representations(self, x, fake_relu=False):
         """Return ``(logits, dict[str, Tensor])`` with all intermediate

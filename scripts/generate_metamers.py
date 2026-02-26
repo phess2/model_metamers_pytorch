@@ -22,13 +22,11 @@ Example::
 import pathlib
 import sys
 from argparse import ArgumentParser
-
+from typing import cast
 
 from src.analysis.metamer import MetamerGenerator, load_model_from_checkpoint
-from src.analysis.saving import (
-    save_metamer_results,
-)  # load_layer_metadata() to read layer metadata
-from src.data.datasets import get_vision_dataset
+from src.analysis.saving import save_metamer_results
+from src.data.datasets import ImageNetFolder, get_vision_dataset
 
 CONFIG_ROOT = pathlib.Path("configs").resolve()
 
@@ -95,7 +93,15 @@ def main():
         "--indices",
         type=str,
         default="0",
-        help='Sample indices, e.g. "0,1,2" or "0-9"',
+        help='Sample indices, e.g. "0,1,2" or "0-9". '
+        "When --imagenet_subset is set, these index into that subset ordering.",
+    )
+    parser.add_argument(
+        "--imagenet_subset",
+        type=str,
+        default="none",
+        choices=["none", "legacy_400_16_val"],
+        help="Optional ImageNet subset selection mode.",
     )
     parser.add_argument("--exp_dir", type=str, default="experiments")
     parser.add_argument("--lr", type=float, default=1.0, help="Initial learning rate")
@@ -166,14 +172,15 @@ def main():
     print(f"Model: {model}")
 
     # ---- List layers mode -------------------------------------------
+    available_layers = list(getattr(model, "metamer_layers"))
     if args.list_layers:
         print("\nAvailable metamer layers:")
-        for layer in model.metamer_layers:
+        for layer in available_layers:
             print(f"  - {layer}")
         sys.exit(0)
 
     # ---- Determine layers -------------------------------------------
-    layers = args.layers if args.layers else model.metamer_layers
+    layers = args.layers if args.layers else available_layers
     print(f"Generating metamers for layers: {layers}")
 
     # ---- Derive experiment path -------------------------------------
@@ -199,13 +206,89 @@ def main():
     print(f"Loading {args.dataset} dataset from {data_dir} (split={args.split})")
     # raw=True: images in pixel space [0, 1] (no ImageNet normalisation).
     # MetamerGenerator handles normalisation internally before forward passes.
-    dataset = get_vision_dataset(
-        args.dataset, data_dir, image_size, stage="validate", raw=True
-    )
+    if args.imagenet_subset != "none":
+        dataset, selected_subset_indices = cast(
+            tuple[ImageNetFolder, list[int]],
+            get_vision_dataset(
+                args.dataset,
+                data_dir,
+                image_size,
+                stage="validate",
+                raw=True,
+                imagenet_subset=args.imagenet_subset,
+                return_imagenet_subset_indices=True,
+            ),
+        )
+    else:
+        dataset = cast(
+            ImageNetFolder,
+            get_vision_dataset(
+                args.dataset,
+                data_dir,
+                image_size,
+                stage="validate",
+                raw=True,
+            ),
+        )
+        selected_subset_indices = []
+
+    # ---- Optional legacy subset ------------------------------------
+    selected_dataset_indices: list[int] = []
+    use_subset_indices = args.imagenet_subset != "none"
+    if args.imagenet_subset != "none":
+        if args.dataset != "imagenet":
+            print(
+                "ERROR: --imagenet_subset is only supported with --dataset imagenet.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.split != "val":
+            print(
+                "ERROR: --imagenet_subset legacy_400_16_val requires --split val.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if args.imagenet_subset == "legacy_400_16_val":
+            print("Resolving legacy ImageNet subset: legacy_400_16_val")
+            selected_dataset_indices = selected_subset_indices
+            print(
+                f"Resolved {len(selected_dataset_indices)} images for legacy_400_16_val subset."
+            )
+            if len(selected_dataset_indices) != 400:
+                print(
+                    "ERROR: Expected exactly 400 images in legacy subset, got "
+                    f"{len(selected_dataset_indices)}.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            dataset_obj = getattr(dataset, "dataset", dataset)
+            subset_samples = getattr(dataset_obj, "samples")
+            preview = [
+                pathlib.Path(subset_samples[i][0]).name
+                for i in selected_dataset_indices[:5]
+            ]
+            print(f"Subset reproducibility preview (first 5 filenames): {preview}")
 
     # ---- Parse indices -----------------------------------------------
     sample_indices = parse_indices(args.indices)
-    print(f"Sample indices: {sample_indices}")
+    print(f"Sample indices (requested): {sample_indices}")
+
+    if use_subset_indices:
+        subset_max_index = len(selected_dataset_indices) - 1
+        if any(i < 0 or i > subset_max_index for i in sample_indices):
+            print(
+                "ERROR: At least one requested --indices value is out of range for the "
+                f"legacy subset [0, {subset_max_index}].",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            "Interpreting requested indices in legacy subset ordering "
+            f"(size={len(selected_dataset_indices)})."
+        )
+    else:
+        print(f"Sample indices (dataset indices): {sample_indices}")
 
     # ---- Get class names mapping ------------------------------------
     idx_to_class = {v: k for k, v in dataset.class_to_idx.items()}
@@ -235,9 +318,19 @@ def main():
         )
 
         for idx in sample_indices:
-            image, label = dataset[idx]
+            dataset_idx = idx
+            if use_subset_indices:
+                dataset_idx = selected_dataset_indices[idx]
+
+            image, label = dataset[dataset_idx]
             class_label = idx_to_class.get(label, str(label))
-            print(f"\n  Sample {idx}: class={class_label} (label={label})")
+            if use_subset_indices:
+                print(
+                    f"\n  Sample subset_idx={idx} -> dataset_idx={dataset_idx}: "
+                    f"class={class_label} (label={label})"
+                )
+            else:
+                print(f"\n  Sample {idx}: class={class_label} (label={label})")
 
             # Add batch dimension
             image_batch = image.unsqueeze(0)

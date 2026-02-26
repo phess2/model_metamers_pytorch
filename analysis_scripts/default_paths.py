@@ -13,7 +13,7 @@ WORDNET_ID_TO_HUMAN_PATH = os.path.join(
 )
 IMAGENET_PATH = "/om/data/public/imagenet/images_complete/ilsvrc/"
 if not os.path.exists(IMAGENET_PATH):
-    IMAGENET_PATH = None
+    IMAGENET_PATH = "/home/rphess/orcd/datasets/imagenet/images_complete/ilsvrc/"
     print(
         "### WARNING: UNABLE TO FIND IMAGENET FILES. IF TRANING IMAGENET MODELS, CHANGE PATH SPECIFIED IN analysis_scripts/default_paths.py. METAMERS CAN BE GENERATED WITHOUT THESE FILES. ###"
     )
