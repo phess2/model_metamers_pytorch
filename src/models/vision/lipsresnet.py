@@ -303,6 +303,7 @@ class LipsResNet(LipsModel):
             "layer2",
             "layer3",
             "layer4",
+            "avgpool",
             "final",
             # fake_relu variants
             "conv1_relu1_fake_relu",
