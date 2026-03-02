@@ -14,7 +14,7 @@ import torch.nn.functional as F
 #     return M_projected.reshape(M.shape) / len(M_flattened)
 
 
-def _orthogonalize(M, **kwargs):
+def _orthogonalize(matrix, **kwargs):
     """
     Orthogonalize a single matrix, always bfloat16. Credit for coefficients to @YouJiacheng and @leloykun.
     """
@@ -26,73 +26,73 @@ def _orthogonalize(M, **kwargs):
         (2677 / 1024, -3029 / 1024, 1162 / 1024),
         (2172 / 1024, -1833 / 1024, 682 / 1024),
     ]
-    transpose = M.shape[1] > M.shape[0]
+    transpose = matrix.shape[1] > matrix.shape[0]
     if transpose:
-        M = M.T
-    M = M / (M.norm() + 1e-12)
+        matrix = matrix.T
+    matrix = matrix / (matrix.norm() + 1e-12)
     for a, b, c in abc_list:
-        A = M.T @ M
-        identity_matrix = torch.eye(A.shape[0], dtype=M.dtype)
-        M = M @ (a * identity_matrix + b * A + c * A @ A)
+        A = matrix.T @ matrix
+        identity_matrix = torch.eye(A.shape[0], dtype=matrix.dtype)
+        matrix = matrix @ (a * identity_matrix + b * A + c * A @ A)
     if transpose:
-        M = M.T
-    return M
+        matrix = matrix.T
+    return matrix
 
 
-def _soft_cap(M, alpha):
+def _soft_cap(matrix, alpha):
     """
     Apply min(1, x) approximately to the singular values of a single matrix
     Adapted from lipschitz transformers code
     """
     coeffs = [(1, -alpha), (1, alpha)]
-    transpose = M.shape[1] > M.shape[0]
+    transpose = matrix.shape[1] > matrix.shape[0]
     if transpose:
-        M = M.T
+        matrix = matrix.T
     for a, b in coeffs:
-        A = M.T @ M
+        A = matrix.T @ matrix
         identity_matrix = torch.eye(A.shape[0], dtype=A.dtype)
-        M = M @ (a * identity_matrix + b * A)
+        matrix = matrix @ (a * identity_matrix + b * A)
     if transpose:
-        M = M.T
-    return M
+        matrix = matrix.T
+    return matrix
 
 
-def _power_iterate(M, num_iters=16):
+def _power_iterate(matrix, num_iters=16):
     """
     Power iterate to find the largest singular value and vectors of a matrix
     """
-    m, n = M.shape
-    device = M.device
-    dtype = M.dtype
+    m, n = matrix.shape
+    device = matrix.device
+    dtype = matrix.dtype
     if m < n:
         u = torch.randn((m,), device=device, dtype=dtype)
         u = u / (u.norm() + 1e-12)
         for _ in range(num_iters):
-            w = M @ (M.T @ u)
+            w = matrix @ (matrix.T @ u)
             u = w / (w.norm() + 1e-12)
-        MTu = M.T @ u
+        MTu = matrix.T @ u
         sigma = MTu.norm()
         v = MTu / (sigma + 1e-12)
     else:
         v = torch.randn((n,), device=device, dtype=dtype)
         v = v / (v.norm() + 1e-12)
         for _ in range(num_iters):
-            w = M.T @ (M @ v)
+            w = matrix.T @ (matrix @ v)
             v = w / (w.norm() + 1e-12)
-        Mv = M @ v
-        sigma = Mv.norm()
-        u = Mv / (sigma + 1e-12)
+        matrix_v = matrix @ v
+        sigma = matrix_v.norm()
+        u = matrix_v / (sigma + 1e-12)
     return u, sigma, v
 
 
-def _spectral_normalize(M):
+def _spectral_normalize(matrix):
     """
     Normalize the singular values of M to 1
     Adapted from lipschitz transformers code
     """
-    _, sigma_max, _ = _power_iterate(M)
+    _, sigma_max, _ = _power_iterate(matrix)
     sigma_clamped = torch.clamp(sigma_max, min=1.0)
-    return M / sigma_clamped
+    return matrix / sigma_clamped
 
 
 def soft_cap_coupling(w_max, wd, max_update_norm):
