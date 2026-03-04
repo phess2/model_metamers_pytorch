@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 from torch import nn
 
@@ -18,8 +20,8 @@ class LipsAlexNet(LipsModel):
         self,
         num_classes: int = 1000,
         w_max: float = 1.0,
-        projection: str = None,
-    ):
+        projection: Optional[str] = None,
+    ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.w_max = w_max
@@ -187,5 +189,5 @@ class LipsAlexNet(LipsModel):
 
         if return_all_outputs:
             all_outputs["final"] = all_outputs["fctop"]
-            return x, all_outputs
+            return x, all_outputs  # type: ignore
         return x
