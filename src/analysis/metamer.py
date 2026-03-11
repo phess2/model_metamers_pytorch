@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Union, cast
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from src.analysis.regularizers import range_regularizer, total_variation_loss
+from src.data.datasets import ImageNetFolder, get_vision_dataset
 from src.models.registry import get_model
 from src.utils.config import load_config
 
@@ -138,6 +140,84 @@ def load_model_from_checkpoint(
     return model, config
 
 
+def derive_experiment_root(
+    config_path: Union[str, Path],
+    exp_dir: Union[str, Path] = "experiments",
+    config_root: Union[str, Path] = "configs",
+) -> Path:
+    """Build experiment root path using config-relative structure when possible."""
+    config_path_obj = Path(config_path).resolve()
+    exp_dir_obj = Path(exp_dir)
+    config_root_obj = Path(config_root).resolve()
+    try:
+        rel = config_path_obj.relative_to(config_root_obj)
+        return exp_dir_obj / rel.with_suffix("")
+    except ValueError:
+        return exp_dir_obj / config_path_obj.stem
+
+
+def load_eval_dataset_with_subset(
+    *,
+    config: dict,
+    dataset_name: str,
+    split: str,
+    data_dir: Optional[str],
+    imagenet_subset: str,
+) -> Tuple[ImageNetFolder, list[int], bool]:
+    """
+    Load evaluation dataset in raw pixel space with optional ImageNet subset.
+
+    Returns:
+        dataset: full validation dataset wrapper
+        selected_subset_indices: ordered dataset indices when subset is enabled
+        use_subset_indices: whether caller should interpret sample indices in subset order
+    """
+    data_settings = config.get("data_settings", {})
+    resolved_data_dir = data_dir or data_settings.get("data_dir")
+    if resolved_data_dir is None:
+        raise ValueError("data_dir is required via CLI or config['data_settings']['data_dir'].")
+    image_size = data_settings.get("image_size", 224)
+
+    if imagenet_subset != "none":
+        dataset, selected_subset_indices = cast(
+            tuple[ImageNetFolder, list[int]],
+            get_vision_dataset(
+                dataset_name,
+                resolved_data_dir,
+                image_size,
+                stage="validate",
+                raw=True,
+                imagenet_subset=imagenet_subset,
+                return_imagenet_subset_indices=True,
+            ),
+        )
+    else:
+        dataset = cast(
+            ImageNetFolder,
+            get_vision_dataset(
+                dataset_name,
+                resolved_data_dir,
+                image_size,
+                stage="validate",
+                raw=True,
+            ),
+        )
+        selected_subset_indices = []
+
+    use_subset_indices = imagenet_subset != "none"
+    if use_subset_indices:
+        if dataset_name != "imagenet":
+            raise ValueError("--imagenet_subset is only supported with --dataset imagenet.")
+        if split != "val":
+            raise ValueError("--imagenet_subset imagenet_400_val requires --split val.")
+        if imagenet_subset == "imagenet_400_val" and len(selected_subset_indices) != 400:
+            raise ValueError(
+                "Expected exactly 400 images in imagenet_400_val subset, "
+                f"got {len(selected_subset_indices)}."
+            )
+    return dataset, selected_subset_indices, use_subset_indices
+
+
 # ---------------------------------------------------------------------------
 # Loss functions
 # ---------------------------------------------------------------------------
@@ -164,6 +244,63 @@ _LOSS_FNS = {
     "l2": _l2_loss,
     "cosine": _cosine_loss,
 }
+
+
+class L2AdversarialAttacker:
+    """Untargeted projected-gradient attacker with L2 constraints in pixel space."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        normalize_fn: Callable[[Tensor], Tensor],
+        epsilon: float,
+        step_size: float,
+        num_steps: int,
+        clamp_range: Tuple[float, float] = (0.0, 1.0),
+        device: str = "cuda",
+    ):
+        self.model = model
+        self.normalize_fn = normalize_fn
+        self.epsilon = epsilon
+        self.step_size = step_size
+        self.num_steps = num_steps
+        self.clamp_range = clamp_range
+        self.device = device
+
+    def _project_l2_ball(self, delta: Tensor) -> Tensor:
+        flat = delta.view(delta.shape[0], -1)
+        norms = flat.norm(p=2, dim=1, keepdim=True)
+        scale = torch.clamp(self.epsilon / (norms + 1e-12), max=1.0)
+        return (flat * scale).view_as(delta)
+
+    def attack(self, x: Tensor, y: Tensor) -> Tensor:
+        """
+        Create adversarial examples for (x, y) with untargeted L2 PGD.
+
+        x is expected in pixel space [0, 1].
+        """
+        x = x.to(self.device)
+        y = y.to(self.device)
+        delta = torch.zeros_like(x, device=self.device)
+
+        for _ in range(self.num_steps):
+            adv = (x + delta).clamp(*self.clamp_range).detach().requires_grad_(True)
+            adv_norm = self.normalize_fn(adv)
+            logits = self.model(adv_norm)
+            loss = F.cross_entropy(logits, y)
+            grad = torch.autograd.grad(loss, adv)[0]
+
+            grad_flat = grad.view(grad.shape[0], -1)
+            grad_norm = grad_flat.norm(p=2, dim=1, keepdim=True).view(-1, 1, 1, 1)
+            normalized_grad = grad / (grad_norm + 1e-12)
+
+            with torch.no_grad():
+                delta = delta + self.step_size * normalized_grad
+                delta = self._project_l2_ball(delta)
+                adv = (x + delta).clamp(*self.clamp_range)
+                delta = (adv - x).detach()
+
+        return (x + delta).clamp(*self.clamp_range).detach()
 
 
 # ---------------------------------------------------------------------------

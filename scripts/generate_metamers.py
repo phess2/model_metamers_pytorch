@@ -22,18 +22,15 @@ Example::
 import pathlib
 import sys
 from argparse import ArgumentParser
-from typing import cast
 
 from src.analysis.metamer import (
     MetamerGenerator,
+    derive_experiment_root,
+    load_eval_dataset_with_subset,
     load_model_from_checkpoint,
     resolve_model_normalize_fn,
 )
 from src.analysis.saving import save_metamer_results
-from src.data.datasets import ImageNetFolder, get_vision_dataset
-
-CONFIG_ROOT = pathlib.Path("configs").resolve()
-
 
 # ---------------------------------------------------------------------------
 # Index parsing (supports "0", "0,1,2", "0-9", "0-4,10,20-24")
@@ -189,57 +186,33 @@ def main():
     print(f"Generating metamers for layers: {layers}")
 
     # ---- Derive experiment path -------------------------------------
-    config_path = pathlib.Path(args.config).resolve()
-    exp_dir = pathlib.Path(args.exp_dir)
-    try:
-        rel = config_path.relative_to(CONFIG_ROOT)
-        exp_root = exp_dir / rel.with_suffix("")
-    except ValueError:
-        exp_root = exp_dir / config_path.stem
+    exp_root = derive_experiment_root(
+        config_path=args.config, exp_dir=args.exp_dir, config_root="configs"
+    )
 
     # ---- Load dataset -----------------------------------------------
     data_settings = config.get("data_settings", {})
     data_dir = args.data_dir or data_settings.get("data_dir")
-    image_size = data_settings.get("image_size", 224)
-
     if data_dir is None:
         print(
             "ERROR: --data_dir not provided and not found in config.", file=sys.stderr
         )
         sys.exit(1)
-
     print(f"Loading {args.dataset} dataset from {data_dir} (split={args.split})")
-    # raw=True: images in pixel space [0, 1] (no ImageNet normalisation).
-    # MetamerGenerator handles normalisation internally before forward passes.
-    if args.imagenet_subset != "none":
-        dataset, selected_subset_indices = cast(
-            tuple[ImageNetFolder, list[int]],
-            get_vision_dataset(
-                args.dataset,
-                data_dir,
-                image_size,
-                stage="validate",
-                raw=True,
-                imagenet_subset=args.imagenet_subset,
-                return_imagenet_subset_indices=True,
-            ),
+    try:
+        dataset, selected_subset_indices, use_subset_indices = load_eval_dataset_with_subset(
+            config=config,
+            dataset_name=args.dataset,
+            split=args.split,
+            data_dir=args.data_dir,
+            imagenet_subset=args.imagenet_subset,
         )
-    else:
-        dataset = cast(
-            ImageNetFolder,
-            get_vision_dataset(
-                args.dataset,
-                data_dir,
-                image_size,
-                stage="validate",
-                raw=True,
-            ),
-        )
-        selected_subset_indices = []
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # ---- Optional ImageNet subset ----------------------------------
     selected_dataset_indices: list[int] = []
-    use_subset_indices = args.imagenet_subset != "none"
     if args.imagenet_subset != "none":
         if args.dataset != "imagenet":
             print(
@@ -260,13 +233,6 @@ def main():
             print(
                 f"Resolved {len(selected_dataset_indices)} images for imagenet_400_val subset."
             )
-            if len(selected_dataset_indices) != 400:
-                print(
-                    "ERROR: Expected exactly 400 images in imagenet_400_val subset, got "
-                    f"{len(selected_dataset_indices)}.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
             dataset_obj = getattr(dataset, "dataset", dataset)
             subset_samples = getattr(dataset_obj, "samples")
             preview = [

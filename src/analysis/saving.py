@@ -8,9 +8,10 @@ vision, saves ``.png`` files; audio support can be added later.
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
-from typing import Dict, Union
+from typing import Dict, Sequence, Union
 
 import torch
 from torch import Tensor
@@ -136,3 +137,51 @@ def save_metamer_results(
         _save_image(metamer_img.clamp(0, 1), output_dir / f"{prefix}_metamer.png")
         _save_image(original_img.clamp(0, 1), output_dir / f"{prefix}_original.png")
     # Future: elif modality == "audio": save .wav
+
+
+def save_adversarial_results_csv(
+    rows: Sequence[Dict],
+    output_path: Union[str, Path],
+) -> Path:
+    """
+    Save per-sample adversarial evaluation records to CSV.
+
+    The input rows should include:
+      - true_class_label
+      - predicted_class_label
+      - is_correct
+      - predicted_softmax
+
+    Additional keys are allowed and will be included as extra columns.
+    """
+    output_path_obj = Path(output_path)
+    output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+    if not rows:
+        fieldnames = [
+            "true_class_label",
+            "predicted_class_label",
+            "is_correct",
+            "predicted_softmax",
+        ]
+    else:
+        base_fieldnames = [
+            "sample_idx",
+            "dataset_idx",
+            "true_label_idx",
+            "predicted_label_idx",
+            "true_class_label",
+            "predicted_class_label",
+            "is_correct",
+            "predicted_softmax",
+        ]
+        first_row_keys = list(rows[0].keys())
+        extras = [key for key in first_row_keys if key not in base_fieldnames]
+        fieldnames = [name for name in base_fieldnames if name in first_row_keys] + extras
+
+    with open(output_path_obj, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return output_path_obj
