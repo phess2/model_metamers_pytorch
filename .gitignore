@@ -15,3 +15,5 @@ experiments/
 .ruff_cache/
 
 pyrightconfig.json
+
+AGENTS.md
