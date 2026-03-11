@@ -8,6 +8,7 @@ To register a new model (e.g. an audio architecture), add it to
 
 from __future__ import annotations
 
+import inspect
 from typing import Dict, Type
 
 from .base import LipsModel
@@ -40,20 +41,17 @@ def get_model(config: dict) -> LipsModel:
     cls = _MODEL_REGISTRY[model_name]
     hparams = config.get("hparams", {})
 
-    # Forward relevant hparams to the model constructor
-    model_kwargs = {
-        "num_classes": hparams.get("num_classes", 1000),
-        "w_max": hparams.get("w_max", 1.0),
-        "projection": hparams.get("projection", None),
+    sig = inspect.signature(cls.__init__)
+    accepted_kwargs = {
+        name
+        for name, param in sig.parameters.items()
+        if name != "self"
+        and param.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     }
-
-    # ResNet-specific hparams
-    if "layer_sizes" in hparams:
-        model_kwargs["layer_sizes"] = hparams["layer_sizes"]
-    if "block_type" in hparams:
-        model_kwargs["block_type"] = hparams["block_type"]
-    if "zero_init_residual" in hparams:
-        model_kwargs["zero_init_residual"] = hparams["zero_init_residual"]
+    model_kwargs = {k: v for k, v in hparams.items() if k in accepted_kwargs}
+    if "num_classes" in accepted_kwargs and "num_classes" not in model_kwargs:
+        model_kwargs["num_classes"] = 1000
 
     return cls(**model_kwargs)
 
@@ -66,9 +64,12 @@ def get_model(config: dict) -> LipsModel:
 def _register_builtins() -> None:
     from .vision.lipsalexnet import LipsAlexNet
     from .vision.lipsresnet import LipsResNet
+    from .vision.robustvision import RobustAlexNet, RobustResNet50
 
     register_model("lipsalexnet", LipsAlexNet)
     register_model("lipsresnet", LipsResNet)
+    register_model("robustalexnet", RobustAlexNet)
+    register_model("robustresnet50", RobustResNet50)
 
 
 _register_builtins()

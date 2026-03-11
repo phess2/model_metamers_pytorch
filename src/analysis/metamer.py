@@ -31,6 +31,36 @@ def _normalize_imagenet(x: Tensor) -> Tensor:
     return (x - mean) / std
 
 
+def _normalize_identity(x: Tensor) -> Tensor:
+    """Return input unchanged."""
+    return x
+
+
+def resolve_model_normalize_fn(
+    model: torch.nn.Module, config: Optional[dict] = None
+) -> Callable[[Tensor], Tensor]:
+    """
+    Resolve the pixel->model normalization function for metamer generation.
+
+    Priority:
+      1) config["metamer_normalization"] if set
+      2) model.metamer_normalize_mode if set
+      3) default ImageNet normalization
+    """
+    config = config or {}
+    mode = config.get("metamer_normalization") or getattr(
+        model, "metamer_normalize_mode", "imagenet"
+    )
+    if mode == "identity":
+        return _normalize_identity
+    if mode == "imagenet":
+        return _normalize_imagenet
+    raise ValueError(
+        f"Unknown metamer normalization mode '{mode}'. Expected one of "
+        "['identity', 'imagenet']."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model loading helper
 # ---------------------------------------------------------------------------
@@ -42,10 +72,11 @@ def load_model_from_checkpoint(
     device: str = "cuda",
 ) -> Tuple[torch.nn.Module, dict]:
     """
-    Load a trained model from a config file and Lightning checkpoint.
+    Load a trained model from a config file and checkpoint.
 
-    Handles the Lightning checkpoint format where ``state_dict`` keys are
-    prefixed with ``"model."``.
+    Supports:
+      - Lightning ``.ckpt`` files for Lipschitz models
+      - robustness ``.pt`` files for legacy adversarially-trained models
 
     Args:
         config_path: Path to the model config (JSON / YAML).
@@ -58,6 +89,24 @@ def load_model_from_checkpoint(
     """
     config = load_config(config_path)
     model = get_model(config)
+    checkpoint_format = config.get("checkpoint_format", "lightning")
+
+    if checkpoint_format == "robustness":
+        if not hasattr(model, "load_checkpoint"):
+            raise TypeError(
+                "Config requests checkpoint_format='robustness', but model "
+                f"{type(model).__name__} does not implement load_checkpoint()."
+            )
+        model.load_checkpoint(str(ckpt_path), device=device)
+        model.to(device).eval()
+        return model, config
+
+    if checkpoint_format != "lightning":
+        raise ValueError(
+            f"Unknown checkpoint_format '{checkpoint_format}'. "
+            "Expected one of ['lightning', 'robustness']."
+        )
+
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     # Strip the "model." prefix added by LipsLightningModule

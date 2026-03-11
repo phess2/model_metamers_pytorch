@@ -24,7 +24,11 @@ import sys
 from argparse import ArgumentParser
 from typing import cast
 
-from src.analysis.metamer import MetamerGenerator, load_model_from_checkpoint
+from src.analysis.metamer import (
+    MetamerGenerator,
+    load_model_from_checkpoint,
+    resolve_model_normalize_fn,
+)
 from src.analysis.saving import save_metamer_results
 from src.data.datasets import ImageNetFolder, get_vision_dataset
 
@@ -170,6 +174,7 @@ def main():
         args.config, args.ckpt_path, device=args.device
     )
     print(f"Model: {model}")
+    normalize_fn = resolve_model_normalize_fn(model, config)
 
     # ---- List layers mode -------------------------------------------
     available_layers = list(getattr(model, "metamer_layers"))
@@ -312,6 +317,7 @@ def main():
             lambda_tv=args.lambda_tv,
             lambda_range=args.lambda_range,
             range_norm_p=args.range_norm_p,
+            normalize_fn=normalize_fn,
             noise_scale=args.noise_scale,
             noise_mean=args.noise_mean,
             device=args.device,
