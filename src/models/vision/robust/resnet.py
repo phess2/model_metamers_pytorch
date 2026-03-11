@@ -3,6 +3,12 @@ from __future__ import annotations
 import torch.nn as nn
 
 from ...layers.custom_modules import FakeReLU, SequentialWithArgs
+from ...layers.rms_bounds import (
+    batchnorm2d_lips_bound,
+    conv2d_rms_lips_bound,
+    linear_rms_lips_bound,
+    product_bound,
+)
 
 
 def _conv3x3(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
@@ -18,6 +24,23 @@ def _conv3x3(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
 
 def _conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+
+
+def _bound_for_module(module: nn.Module) -> float:
+    if isinstance(module, nn.Conv2d):
+        return conv2d_rms_lips_bound(module)
+    if isinstance(module, nn.Linear):
+        return linear_rms_lips_bound(module)
+    if isinstance(module, nn.BatchNorm2d):
+        return batchnorm2d_lips_bound(module)
+    return 1.0
+
+
+def _module_bound_product(module: nn.Module | None) -> float:
+    if module is None:
+        return 1.0
+    bounds = [_bound_for_module(submodule) for submodule in module.modules()]
+    return product_bound(bounds)
 
 
 class _BasicBlock(nn.Module):
@@ -39,6 +62,18 @@ class _BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.last_block = last_block
+
+    def get_lips_bound(self) -> float:
+        main_bound = product_bound(
+            (
+                conv2d_rms_lips_bound(self.conv1),
+                batchnorm2d_lips_bound(self.bn1),
+                conv2d_rms_lips_bound(self.conv2),
+                batchnorm2d_lips_bound(self.bn2),
+            )
+        )
+        skip_bound = _module_bound_product(self.downsample)
+        return skip_bound + main_bound
 
     def forward(self, x, fake_relu: bool = False):
         identity = x
@@ -80,6 +115,20 @@ class _Bottleneck(nn.Module):
         self.relu = nn.ReLU(inplace=False)
         self.downsample = downsample
         self.last_block = last_block
+
+    def get_lips_bound(self) -> float:
+        main_bound = product_bound(
+            (
+                conv2d_rms_lips_bound(self.conv1),
+                batchnorm2d_lips_bound(self.bn1),
+                conv2d_rms_lips_bound(self.conv2),
+                batchnorm2d_lips_bound(self.bn2),
+                conv2d_rms_lips_bound(self.conv3),
+                batchnorm2d_lips_bound(self.bn3),
+            )
+        )
+        skip_bound = _module_bound_product(self.downsample)
+        return skip_bound + main_bound
 
     def forward(self, x, fake_relu: bool = False):
         identity = x
@@ -147,6 +196,23 @@ class RobustResNetClassifier(nn.Module):
                     nn.init.constant_(module.bn3.weight, 0)
                 elif isinstance(module, _BasicBlock):
                     nn.init.constant_(module.bn2.weight, 0)
+
+    def get_lips_bound(self) -> float:
+        stem_bound = product_bound(
+            (
+                conv2d_rms_lips_bound(self.conv1),
+                batchnorm2d_lips_bound(self.bn1),
+            )
+        )
+        stage_bounds: list[float] = []
+        for stage in (self.layer1, self.layer2, self.layer3, self.layer4):
+            stage_bounds.extend(
+                block.get_lips_bound()  # type: ignore[attr-defined]
+                for block in stage._modules.values()
+                if isinstance(block, (_BasicBlock, _Bottleneck))
+            )
+        head_bound = linear_rms_lips_bound(self.fc)
+        return product_bound((stem_bound, *stage_bounds, head_bound))
 
     def _make_layer(
         self,

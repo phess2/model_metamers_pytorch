@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import dill
 import torch
 
 from ..base import LipsModel
+from ..layers.rms_bounds import input_normalize_lips_bound, product_bound
 from .robust import build_internal_attacker_model
 
 _RESNET50_REMAP_KEYS = {
@@ -208,8 +209,16 @@ class _BaseRobustVisionModel(LipsModel):
         return {}
 
     def get_lips_bound(self) -> float:
-        # This family is unconstrained; exact/global bounds are not defined here.
-        return float("nan")
+        if self._wrapped_model is None:
+            raise RuntimeError(
+                "Robust checkpoint is not loaded. Call load_checkpoint() first."
+            )
+        wrapped_model = cast(Any, self._wrapped_model)
+        preproc_bound = input_normalize_lips_bound(
+            cast(torch.Tensor, wrapped_model.preproc.normalize.new_std)
+        )
+        classifier_bound = float(wrapped_model.model.get_lips_bound())
+        return product_bound((preproc_bound, classifier_bound))
 
     def extra_repr(self) -> str:
         return f"variant={self.variant}, checkpoint_root='{self.checkpoint_root}'"

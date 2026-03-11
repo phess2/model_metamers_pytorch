@@ -3,6 +3,11 @@ from __future__ import annotations
 import torch.nn as nn
 
 from ...layers.custom_modules import FakeReLUM
+from ...layers.rms_bounds import (
+    conv2d_rms_lips_bound,
+    linear_rms_lips_bound,
+    product_bound,
+)
 
 
 class RobustAlexNetClassifier(nn.Module):
@@ -67,6 +72,17 @@ class RobustAlexNetClassifier(nn.Module):
         ]
         self.fake_relu_dict["fc0_relu"] = FakeReLUM()
         self.fake_relu_dict["fc1_relu"] = FakeReLUM()
+
+    def get_lips_bound(self) -> float:
+        """Compose an RMS->RMS bound across all affine operators."""
+        bounds: list[float] = []
+        for layer in self.features:
+            if isinstance(layer, nn.Conv2d):
+                bounds.append(conv2d_rms_lips_bound(layer))
+        for layer in self.classifier:
+            if isinstance(layer, nn.Linear):
+                bounds.append(linear_rms_lips_bound(layer))
+        return product_bound(bounds)
 
     def forward(
         self,
