@@ -150,7 +150,7 @@ def save_adversarial_results_csv(
       - true_class_label
       - predicted_class_label
       - is_correct
-      - predicted_softmax
+      - true_class_softmax
 
     Additional keys are allowed and will be included as extra columns.
     """
@@ -162,7 +162,7 @@ def save_adversarial_results_csv(
             "true_class_label",
             "predicted_class_label",
             "is_correct",
-            "predicted_softmax",
+            "true_class_softmax",
         ]
     else:
         base_fieldnames = [
@@ -173,7 +173,7 @@ def save_adversarial_results_csv(
             "true_class_label",
             "predicted_class_label",
             "is_correct",
-            "predicted_softmax",
+            "true_class_softmax",
         ]
         first_row_keys = list(rows[0].keys())
         extras = [key for key in first_row_keys if key not in base_fieldnames]

@@ -161,7 +161,7 @@ def main():
             logits = model(normalize_fn(adversarial))
             probs = torch.softmax(logits, dim=1)
             pred_idx = int(logits.argmax(dim=1).item())
-            pred_softmax = float(probs[0, pred_idx].item())
+            true_softmax = float(probs[0, int(label)].item())
 
         true_class_label = idx_to_class.get(int(label), str(int(label)))
         pred_class_label = idx_to_class.get(pred_idx, str(pred_idx))
@@ -176,7 +176,7 @@ def main():
                 "true_class_label": true_class_label,
                 "predicted_class_label": pred_class_label,
                 "is_correct": is_correct,
-                "predicted_softmax": pred_softmax,
+                "true_class_softmax": true_softmax,
                 "epsilon_l2": args.epsilon,
             }
         )
