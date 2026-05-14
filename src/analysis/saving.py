@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Dict, Sequence, Union
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from scipy.io import wavfile
 from torch import Tensor
@@ -35,6 +37,44 @@ def _save_audio_waveform(tensor: Tensor, path: Path, sample_rate: int) -> None:
     waveform = waveform.clamp(-1.0, 1.0).numpy()
     wav_int16 = (waveform * 32767.0).astype("int16")
     wavfile.write(str(path), int(sample_rate), wav_int16)
+
+
+def _save_audio_spectrogram_image(
+    tensor: Tensor,
+    path: Path,
+    sample_rate: int,
+    title: str,
+    n_fft: int = 512,
+    hop_length: int = 160,
+    eps: float = 1e-8,
+) -> None:
+    waveform = tensor.detach().cpu()
+    if waveform.dim() == 3:
+        waveform = waveform.squeeze(1)
+    if waveform.dim() == 2:
+        waveform = waveform[0]
+    if waveform.dim() != 1:
+        raise ValueError(f"Expected 1D waveform for spectrogram save, got {waveform.shape}")
+
+    stft = torch.stft(
+        waveform,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        return_complex=True,
+        center=True,
+    )
+    spec = torch.log10(stft.abs().pow(2) + eps).numpy()
+    times = np.linspace(0, waveform.shape[0] / float(sample_rate), spec.shape[1])
+    freqs = np.linspace(0, sample_rate / 2.0, spec.shape[0])
+
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.pcolormesh(times, freqs, spec, shading="auto")
+    ax.set_title(title)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (Hz)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
 
 
 def append_metamer_metadata(metadata: Dict, output_dir: Union[str, Path]) -> None:
@@ -205,3 +245,86 @@ def save_adversarial_results_csv(
         writer.writerows(rows)
 
     return output_path_obj
+
+
+def save_audio_adversarial_results(
+    *,
+    original: Tensor,
+    adversarial: Tensor,
+    metadata: Dict,
+    output_dir: Union[str, Path],
+    sample_idx: int,
+    class_label: str,
+    include_spectrograms: bool = True,
+) -> Dict[str, str]:
+    """Save waveform adversarial outputs and append metadata JSONL."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"idx{sample_idx:04d}_{class_label}"
+    sample_rate = int(metadata.get("sample_rate", metadata.get("file_sr", 16_000)))
+
+    delta = (adversarial - original).detach()
+
+    saved_paths = {
+        "original_pt": str(output_dir / f"{prefix}_original.pt"),
+        "adversarial_pt": str(output_dir / f"{prefix}_adversarial.pt"),
+        "delta_pt": str(output_dir / f"{prefix}_delta.pt"),
+        "original_wav": str(output_dir / f"{prefix}_original.wav"),
+        "adversarial_wav": str(output_dir / f"{prefix}_adversarial.wav"),
+        "delta_wav": str(output_dir / f"{prefix}_perturbation.wav"),
+    }
+
+    torch.save(original.detach().cpu(), saved_paths["original_pt"])
+    torch.save(adversarial.detach().cpu(), saved_paths["adversarial_pt"])
+    torch.save(delta.detach().cpu(), saved_paths["delta_pt"])
+
+    _save_audio_waveform(original, Path(saved_paths["original_wav"]), sample_rate=sample_rate)
+    _save_audio_waveform(
+        adversarial, Path(saved_paths["adversarial_wav"]), sample_rate=sample_rate
+    )
+    _save_audio_waveform(delta, Path(saved_paths["delta_wav"]), sample_rate=sample_rate)
+
+    if include_spectrograms:
+        saved_paths.update(
+            {
+                "original_spectrogram_png": str(output_dir / f"{prefix}_original_spec.png"),
+                "adversarial_spectrogram_png": str(
+                    output_dir / f"{prefix}_adversarial_spec.png"
+                ),
+                "delta_spectrogram_png": str(output_dir / f"{prefix}_delta_spec.png"),
+                "spec_difference_png": str(output_dir / f"{prefix}_spec_diff.png"),
+            }
+        )
+        _save_audio_spectrogram_image(
+            original,
+            Path(saved_paths["original_spectrogram_png"]),
+            sample_rate=sample_rate,
+            title="Original Spectrogram",
+        )
+        _save_audio_spectrogram_image(
+            adversarial,
+            Path(saved_paths["adversarial_spectrogram_png"]),
+            sample_rate=sample_rate,
+            title="Adversarial Spectrogram",
+        )
+        _save_audio_spectrogram_image(
+            delta,
+            Path(saved_paths["delta_spectrogram_png"]),
+            sample_rate=sample_rate,
+            title="Perturbation Spectrogram",
+        )
+        _save_audio_spectrogram_image(
+            adversarial - original,
+            Path(saved_paths["spec_difference_png"]),
+            sample_rate=sample_rate,
+            title="Spectrogram Difference Proxy",
+        )
+
+    metadata_with_paths = {
+        "sample_idx": sample_idx,
+        "class_label": class_label,
+        **metadata,
+        "saved_paths": saved_paths,
+    }
+    append_metamer_metadata(metadata_with_paths, output_dir=output_dir)
+    return saved_paths
