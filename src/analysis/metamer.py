@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, Optional, Tuple, Union, cast
 
 import torch
 import torch.nn.functional as F
@@ -99,7 +99,7 @@ def load_model_from_checkpoint(
                 "Config requests checkpoint_format='robustness', but model "
                 f"{type(model).__name__} does not implement load_checkpoint()."
             )
-        model.load_checkpoint(str(ckpt_path), device=device)
+        cast(Any, model).load_checkpoint(str(ckpt_path), device=device)
         model.to(device).eval()
         return model, config
 
@@ -371,6 +371,7 @@ class MetamerGenerator:
         lambda_range: float = 0.0,
         range_norm_p: int = 6,
         normalize_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        forward_kwargs: Optional[dict] = None,
         noise_scale: float = 0.05,
         noise_mean: float = 0.5,
         device: str = "cuda",
@@ -390,6 +391,7 @@ class MetamerGenerator:
         self.normalize_fn = (
             normalize_fn if normalize_fn is not None else _normalize_imagenet
         )
+        self.forward_kwargs = dict(forward_kwargs) if forward_kwargs is not None else {}
         self.noise_scale = noise_scale
         self.noise_mean = noise_mean
         self.device = device
@@ -414,8 +416,8 @@ class MetamerGenerator:
         """
         x = x.to(self.device)
         x_norm = self.normalize_fn(x)
-        _logits, all_outputs = self.model.forward_with_representations(
-            x_norm, fake_relu=self.fake_relu
+        _logits, all_outputs = cast(Any, self.model).forward_with_representations(
+            x_norm, fake_relu=self.fake_relu, **self.forward_kwargs
         )
         if self.layer_name not in all_outputs:
             available = sorted(all_outputs.keys())
@@ -476,11 +478,11 @@ class MetamerGenerator:
             current_lr = self.lr * (self.lr_decay**rnd)
 
             round_losses = []
-            for step in range(self.steps_per_round):
+            for _step in range(self.steps_per_round):
                 # Normalise to model input space before forward pass
                 metamer_norm = self.normalize_fn(metamer)
-                _logits, all_outputs = self.model.forward_with_representations(
-                    metamer_norm, fake_relu=self.fake_relu
+                _logits, all_outputs = cast(Any, self.model).forward_with_representations(
+                    metamer_norm, fake_relu=self.fake_relu, **self.forward_kwargs
                 )
                 current_rep = all_outputs[self.layer_name]
                 loss = self._loss_fn(current_rep, target_rep)
@@ -497,7 +499,7 @@ class MetamerGenerator:
                 grad = torch.autograd.grad(loss, metamer)[0]
                 with torch.no_grad():
                     g_norm = torch.norm(grad.view(grad.shape[0], -1), dim=1).view(
-                        -1, 1, 1, 1
+                        grad.shape[0], *([1] * (grad.dim() - 1))
                     )
                     # Descend: subtract normalised gradient * step size
                     metamer = metamer - (grad / (g_norm + 1e-10)) * current_lr

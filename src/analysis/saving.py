@@ -3,7 +3,7 @@ Saving utilities for metamer generation results.
 
 Handles saving metamer tensors, original/metamer images (for visual
 inspection), and JSONL metadata (one file per layer).  Modality-aware: for
-vision, saves ``.png`` files; audio support can be added later.
+vision, saves ``.png`` files; for audio, saves ``.wav`` files.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Sequence, Union
 
 import torch
+from scipy.io import wavfile
 from torch import Tensor
 
 
@@ -22,6 +23,18 @@ def _save_image(tensor: Tensor, path: Path) -> None:
     from torchvision.utils import save_image
 
     save_image(tensor, str(path))
+
+
+def _save_audio_waveform(tensor: Tensor, path: Path, sample_rate: int) -> None:
+    """Save a waveform tensor as int16 WAV."""
+    waveform = tensor.detach().cpu()
+    if waveform.dim() == 3:
+        waveform = waveform.squeeze(1)
+    if waveform.dim() == 2:
+        waveform = waveform[0]
+    waveform = waveform.clamp(-1.0, 1.0).numpy()
+    wav_int16 = (waveform * 32767.0).astype("int16")
+    wavfile.write(str(path), int(sample_rate), wav_int16)
 
 
 def append_metamer_metadata(metadata: Dict, output_dir: Union[str, Path]) -> None:
@@ -123,8 +136,8 @@ def save_metamer_results(
     }
     append_metamer_metadata(full_meta, output_dir)
 
-    # 3. Modality-specific visual outputs
-    # Both metamer and original are expected in pixel space [0, 1].
+    # 3. Modality-specific outputs
+    # For vision, both metamer and original are expected in pixel space [0, 1].
     if modality == "vision":
         metamer_img = metamer.cpu()
         original_img = original.cpu()
@@ -136,7 +149,14 @@ def save_metamer_results(
 
         _save_image(metamer_img.clamp(0, 1), output_dir / f"{prefix}_metamer.png")
         _save_image(original_img.clamp(0, 1), output_dir / f"{prefix}_original.png")
-    # Future: elif modality == "audio": save .wav
+    elif modality == "audio":
+        sample_rate = metadata.get("sample_rate", metadata.get("file_sr", 16_000))
+        _save_audio_waveform(
+            original, output_dir / f"{prefix}_original.wav", sample_rate=sample_rate
+        )
+        _save_audio_waveform(
+            metamer, output_dir / f"{prefix}_metamer.wav", sample_rate=sample_rate
+        )
 
 
 def save_adversarial_results_csv(
