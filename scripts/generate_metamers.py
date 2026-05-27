@@ -36,6 +36,7 @@ from src.analysis.metamer import (
     load_model_from_checkpoint,
     resolve_model_normalize_fn,
 )
+from src.analysis.audio_filtering import lowpass_filter_for_model
 from src.analysis.saving import save_metamer_results
 from src.models.audio import get_audio_model
 
@@ -566,10 +567,20 @@ def main():
             metamer, metadata = generator.generate(
                 target_rep, shape=original_waveform_model.shape, seed=args.seed + idx
             )
+            metamer, lowpass_metadata = lowpass_filter_for_model(
+                metamer,
+                model_name=args.audio_model_name,
+                sample_rate=int(file_sr),
+            )
+            filtered_rep = generator.extract_target(metamer)
+            filtered_distance = float(generator._loss_fn(filtered_rep, target_rep).item())
 
             metadata["layer_name"] = layer_name
             metadata["model_name"] = args.audio_model_name
             metadata["sample_rate"] = int(file_sr)
+            metadata["final_loss"] = filtered_distance
+            metadata["final_representation_distance"] = filtered_distance
+            metadata.update(lowpass_metadata)
             metadata["source_info"] = {
                 "audioset_root": str(audioset_root),
                 "first_split_dir": str(first_split_dir),

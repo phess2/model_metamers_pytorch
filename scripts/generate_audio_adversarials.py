@@ -8,7 +8,7 @@ import math
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, cast
 
 import numpy as np
 import torch
@@ -21,6 +21,12 @@ from src.analysis.audio_adversarial import (
     perturbation_norms,
     representation_distance,
 )
+from src.analysis.audio_classification import (
+    aggregate_multilabel_topk,
+    decode_audioset_labels,
+    summarize_multilabel_logits,
+)
+from src.analysis.audio_filtering import lowpass_filter_for_model
 from src.analysis.saving import save_adversarial_results_csv, save_audio_adversarial_results
 from src.models.audio import get_audio_model
 
@@ -127,20 +133,16 @@ def _resolve_target_indices(
     return {source_idx: target_idx for source_idx, target_idx in zip(source_indices, target_indices)}
 
 
-def _maybe_decode_labels(example: dict) -> list[int]:
-    labels_value = example.get("labels")
-    if labels_value is None:
-        return []
-    if hasattr(labels_value, "tolist"):
-        return [int(x) for x in labels_value.tolist()]
-    if isinstance(labels_value, (list, tuple)):
-        return [int(x) for x in labels_value]
-    return [int(labels_value)]
+def _format_label_indices(indices: list[int]) -> str:
+    if not indices:
+        return ""
+    return "|".join(str(int(idx)) for idx in indices)
 
 
 def _extract_model_logits(model: torch.nn.Module, waveform: torch.Tensor, sr: int) -> torch.Tensor | None:
     try:
-        return model.get_classifier_logits(waveform, sr=sr).detach().cpu()
+        logits = cast(Any, model).get_classifier_logits(waveform, sr=sr)
+        return logits.detach().cpu()
     except NotImplementedError:
         return None
 
@@ -177,6 +179,7 @@ def main() -> None:
     parser.add_argument("--input_sample_rate_override", type=int, default=None)
     parser.add_argument("--exp_dir", type=str, default="experiments")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--classification_only", action="store_true")
     args = parser.parse_args()
 
     sample_indices = parse_indices(args.indices)
@@ -240,10 +243,87 @@ def main() -> None:
         f"_loss_{args.loss_type}"
     )
     exp_root = Path(args.exp_dir) / "audio" / args.audio_model_name / "adversarial" / attack_id
+    classification_root = Path(args.exp_dir) / "audio" / args.audio_model_name / "classification" / "raw"
+
+    if args.classification_only:
+        rows = []
+        classification_summaries = []
+        for sample_idx in sample_indices:
+            source_example = selected_examples[sample_idx]
+            file_sr, waveform_np = wavfile.read(io.BytesIO(source_example["audio"]))
+            if args.input_sample_rate_override is not None:
+                file_sr = int(args.input_sample_rate_override)
+            waveform = _normalize_audio_waveform(waveform_np)
+            waveform_mono = waveform.mean(dim=0, keepdim=True)
+            source_clip = _slice_clip(
+                waveform_mono,
+                sr=file_sr,
+                start_seconds=args.start_seconds,
+                clip_seconds=args.clip_seconds,
+            )
+            source_waveform = source_clip.unsqueeze(0).to(args.device)
+
+            logits = _extract_model_logits(model, source_waveform, sr=int(file_sr))
+            if logits is None:
+                raise RuntimeError(
+                    f"Model '{args.audio_model_name}' does not expose classifier logits. "
+                    "--classification_only requires a classifier head."
+                )
+            labels_list = decode_audioset_labels(source_example)
+            logits_summary = summarize_multilabel_logits(logits, true_labels=labels_list)
+            classification_summaries.append(logits_summary)
+
+            ytid_value = source_example.get("ytid", b"")
+            if isinstance(ytid_value, bytes):
+                ytid_value = ytid_value.decode("utf-8", errors="replace")
+            class_label = _sanitize_label(str(ytid_value)) if ytid_value else "audioset"
+            if not class_label:
+                class_label = "audioset"
+
+            rows.append(
+                {
+                    "sample_idx": int(sample_idx),
+                    "dataset_idx": int(sample_idx),
+                    "true_label_idx": int(labels_list[0]) if labels_list else "",
+                    "true_label_indices": _format_label_indices(labels_list),
+                    "predicted_label_idx": int(logits_summary["predicted_label_idx"]),
+                    "predicted_top5_label_indices": _format_label_indices(
+                        logits_summary["predicted_top5_label_indices"]
+                    ),
+                    "true_class_label": class_label,
+                    "predicted_class_label": str(int(logits_summary["predicted_label_idx"])),
+                    "is_correct": bool(logits_summary["top1_hit"]),
+                    "top5_is_correct": bool(logits_summary["top5_hit"]),
+                    "true_class_softmax": float(logits_summary["true_label_max_softmax"]),
+                    "num_true_labels": int(logits_summary["num_true_labels"]),
+                }
+            )
+
+        metrics = aggregate_multilabel_topk(classification_summaries)
+        csv_path = save_adversarial_results_csv(
+            rows=rows, output_path=classification_root / "summary.csv"
+        )
+        payload = {
+            "metrics": metrics,
+            "num_examples": len(rows),
+            "sample_indices": [int(idx) for idx in sample_indices],
+            "audio_model_name": args.audio_model_name,
+            "classification_mode": "raw_source_only",
+            "csv_path": str(csv_path),
+        }
+        with open(classification_root / "summary.json", "w") as f:
+            json.dump(payload, f, indent=2)
+        print(f"Top-1 accuracy: {metrics['top1_acc']:.4f}")
+        print(f"Top-5 accuracy: {metrics['top5_acc']:.4f}")
+        print(f"Saved classification summary: {csv_path}")
+        print(f"Done. Results in {classification_root}")
+        return
 
     for layer_name in layers:
         layer_output_dir = exp_root / layer_name
         rows = []
+        source_classification_summaries = []
+        adversarial_classification_summaries = []
         for sample_idx in sample_indices:
             source_example = selected_examples[sample_idx]
             file_sr, waveform_np = wavfile.read(io.BytesIO(source_example["audio"]))
@@ -306,12 +386,17 @@ def main() -> None:
                     source_rep=source_rep,
                 )
                 target_distance = float(attack_metadata["adv_to_target_distance"])
-                target_labels = _maybe_decode_labels(target_example)
+                target_labels = decode_audioset_labels(target_example)
             else:
                 adversarial, attack_metadata = attacker.attack_untargeted(
                     source_waveform=source_waveform, source_rep=source_rep
                 )
 
+            adversarial, lowpass_metadata = lowpass_filter_for_model(
+                adversarial,
+                model_name=args.audio_model_name,
+                sample_rate=int(file_sr),
+            )
             delta = adversarial - source_waveform
             norms = perturbation_norms(delta)
             adversarial_rep = attacker.extract_representation(adversarial).detach()
@@ -328,10 +413,25 @@ def main() -> None:
             ytid_value = source_example.get("ytid", b"")
             if isinstance(ytid_value, bytes):
                 ytid_value = ytid_value.decode("utf-8", errors="replace")
-            labels_list = _maybe_decode_labels(source_example)
+            labels_list = decode_audioset_labels(source_example)
             class_label = _sanitize_label(str(ytid_value)) if ytid_value else "audioset"
             if not class_label:
                 class_label = "audioset"
+
+            source_logits_summary = (
+                summarize_multilabel_logits(source_logits, true_labels=labels_list)
+                if source_logits is not None
+                else None
+            )
+            adv_logits_summary = (
+                summarize_multilabel_logits(adv_logits, true_labels=labels_list)
+                if adv_logits is not None
+                else None
+            )
+            if source_logits_summary is not None:
+                source_classification_summaries.append(source_logits_summary)
+            if adv_logits_summary is not None:
+                adversarial_classification_summaries.append(adv_logits_summary)
 
             metadata = {
                 "model_name": args.audio_model_name,
@@ -363,11 +463,16 @@ def main() -> None:
                 "delta_linf": float(norms["linf"].mean().item()),
                 "snr_db": _snr_db(signal=source_waveform, noise=delta),
                 "attack_trace": attack_metadata,
+                **lowpass_metadata,
             }
             if source_logits is not None:
                 metadata["source_logits"] = source_logits.numpy().tolist()
+            if source_logits_summary is not None:
+                metadata["source_classification"] = source_logits_summary
             if adv_logits is not None:
                 metadata["adversarial_logits"] = adv_logits.numpy().tolist()
+            if adv_logits_summary is not None:
+                metadata["adversarial_classification"] = adv_logits_summary
 
             save_audio_adversarial_results(
                 original=source_waveform,
@@ -382,10 +487,50 @@ def main() -> None:
             rows.append(
                 {
                     "sample_idx": int(sample_idx),
+                    "dataset_idx": int(sample_idx),
+                    "true_label_idx": int(labels_list[0]) if labels_list else "",
+                    "true_label_indices": _format_label_indices(labels_list),
+                    "predicted_label_idx": (
+                        int(adv_logits_summary["predicted_label_idx"])
+                        if adv_logits_summary is not None
+                        else ""
+                    ),
+                    "predicted_top5_label_indices": (
+                        _format_label_indices(adv_logits_summary["predicted_top5_label_indices"])
+                        if adv_logits_summary is not None
+                        else ""
+                    ),
                     "true_class_label": class_label,
-                    "predicted_class_label": "",
-                    "is_correct": "",
-                    "true_class_softmax": "",
+                    "predicted_class_label": (
+                        str(int(adv_logits_summary["predicted_label_idx"]))
+                        if adv_logits_summary is not None
+                        else ""
+                    ),
+                    "is_correct": (
+                        bool(adv_logits_summary["top1_hit"])
+                        if adv_logits_summary is not None
+                        else ""
+                    ),
+                    "top5_is_correct": (
+                        bool(adv_logits_summary["top5_hit"])
+                        if adv_logits_summary is not None
+                        else ""
+                    ),
+                    "true_class_softmax": (
+                        float(adv_logits_summary["true_label_max_softmax"])
+                        if adv_logits_summary is not None
+                        else ""
+                    ),
+                    "source_is_correct": (
+                        bool(source_logits_summary["top1_hit"])
+                        if source_logits_summary is not None
+                        else ""
+                    ),
+                    "source_top5_is_correct": (
+                        bool(source_logits_summary["top5_hit"])
+                        if source_logits_summary is not None
+                        else ""
+                    ),
                     "attack_mode": args.attack_mode,
                     "layer_name": layer_name,
                     "delta_l2": float(norms["l2"].mean().item()),
@@ -394,6 +539,12 @@ def main() -> None:
                     "representation_distance_from_source": source_distance,
                     "representation_distance_to_target": target_distance,
                     "target_sample_idx": int(target_idx) if target_idx is not None else "",
+                    "lowpass_filter_applied": lowpass_metadata["lowpass_filter_applied"],
+                    "lowpass_filter_cutoff_hz": lowpass_metadata["lowpass_filter_cutoff_hz"],
+                    "lowpass_filter_effective_cutoff_hz": lowpass_metadata[
+                        "lowpass_filter_effective_cutoff_hz"
+                    ],
+                    "lowpass_filter_reason": lowpass_metadata["lowpass_filter_reason"],
                 }
             )
 
@@ -404,6 +555,12 @@ def main() -> None:
 
         summary_path = layer_output_dir / "summary.csv"
         save_adversarial_results_csv(rows=rows, output_path=summary_path)
+        metrics_payload = {
+            "source_metrics": aggregate_multilabel_topk(source_classification_summaries),
+            "adversarial_metrics": aggregate_multilabel_topk(adversarial_classification_summaries),
+        }
+        with open(layer_output_dir / "classification_metrics.json", "w") as f:
+            json.dump(metrics_payload, f, indent=2)
         with open(layer_output_dir / "summary.json", "w") as f:
             json.dump(rows, f, indent=2)
         print(f"Saved layer summary: {summary_path}")
