@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 import os
 import sys
 import tempfile
@@ -13,8 +14,25 @@ sys.path.insert(0, str(_ROOT / "src"))
 
 _AUDIO_BASE = importlib.import_module("models.audio.base")
 _AUDIO_REGISTRY = importlib.import_module("models.audio.registry")
-_AUDIO_ADVERSARIAL = importlib.import_module("analysis.audio_adversarial")
-_SAVING = importlib.import_module("analysis.saving")
+
+
+def _load_module_from_file(module_name: str, file_path: Path):
+    spec = importlib.util.spec_from_file_location(module_name, str(file_path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load module spec for {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_AUDIO_FILTERING = _load_module_from_file(
+    "analysis_audio_filtering_for_tests", _ROOT / "src" / "analysis" / "audio_filtering.py"
+)
+_AUDIO_ADVERSARIAL = _load_module_from_file(
+    "analysis_audio_adversarial_for_tests", _ROOT / "src" / "analysis" / "audio_adversarial.py"
+)
+_SAVING = _load_module_from_file("analysis_saving_for_tests", _ROOT / "src" / "analysis" / "saving.py")
 
 BaseAudioModelWrapper = _AUDIO_BASE.BaseAudioModelWrapper
 get_audio_model = _AUDIO_REGISTRY.get_audio_model
@@ -25,6 +43,7 @@ audit_waveform_gradient = _AUDIO_ADVERSARIAL.audit_waveform_gradient
 project_l2 = _AUDIO_ADVERSARIAL.project_l2
 project_linf = _AUDIO_ADVERSARIAL.project_linf
 representation_distance = _AUDIO_ADVERSARIAL.representation_distance
+lowpass_filter_for_model = _AUDIO_FILTERING.lowpass_filter_for_model
 
 load_layer_metadata = _SAVING.load_layer_metadata
 save_audio_adversarial_results = _SAVING.save_audio_adversarial_results
@@ -168,14 +187,20 @@ class AudioAdversarialTests(unittest.TestCase):
     def test_save_audio_adversarial_results_outputs_files_and_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir) / "layer0"
+            filtered_adversarial, lowpass_metadata = lowpass_filter_for_model(
+                self.source + 0.01,
+                model_name="audiomae_as2m_ft_as20k",
+                sample_rate=32_000,
+            )
             metadata = {
-                "sample_rate": 16_000,
+                "sample_rate": 32_000,
                 "attack_mode": "untargeted",
                 "representation_distance_from_source": 1.23,
+                **lowpass_metadata,
             }
             saved_paths = save_audio_adversarial_results(
                 original=self.source,
-                adversarial=self.source + 0.01,
+                adversarial=filtered_adversarial,
                 metadata=metadata,
                 output_dir=output_dir,
                 sample_idx=3,
@@ -188,6 +213,10 @@ class AudioAdversarialTests(unittest.TestCase):
             self.assertIn(3, loaded_meta)
             self.assertEqual(loaded_meta[3]["class_label"], "toy")
             self.assertIn("saved_paths", loaded_meta[3])
+            self.assertTrue(loaded_meta[3]["lowpass_filter_applied"])
+            self.assertEqual(loaded_meta[3]["lowpass_filter_cutoff_hz"], 8_000)
+            saved_adversarial = torch.load(saved_paths["adversarial_pt"])
+            self.assertTrue(torch.allclose(saved_adversarial, filtered_adversarial.cpu()))
 
     def test_audit_waveform_gradient_reports_finite_nonzero(self):
         report = audit_waveform_gradient(
