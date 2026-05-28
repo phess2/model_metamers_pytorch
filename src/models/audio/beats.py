@@ -4,7 +4,7 @@ import contextlib
 import importlib
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol, Sequence, cast
 
 import torch
 import torchaudio
@@ -21,7 +21,8 @@ _DEFAULT_BEATS_CHECKPOINT_DIR = Path(
 
 _DEFAULT_MODEL_CHECKPOINTS = {
     "beats_iter3": _DEFAULT_BEATS_CHECKPOINT_DIR / "BEATs_iter3.pt",
-    "beats_iter3_plus_as2m": _DEFAULT_BEATS_CHECKPOINT_DIR / "BEATs_iter3_plus_AS2M.pt",
+    "beats_iter3_plus_as2m": _DEFAULT_BEATS_CHECKPOINT_DIR
+    / "BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt1.pt",
 }
 _DEFAULT_TOKENIZER_CHECKPOINTS = {
     "beats_iter3": _DEFAULT_BEATS_CHECKPOINT_DIR / "Tokenizer_iter3.pt",
@@ -100,6 +101,36 @@ def _resolve_checkpoint_paths(
     return resolved_checkpoint, resolved_tokenizer
 
 
+class _BeatsEncoderLike(Protocol):
+    layers: Sequence[nn.Module]
+
+    def __call__(
+        self,
+        x: torch.Tensor,
+        *,
+        padding_mask: Optional[torch.Tensor],
+        layer: Optional[int],
+    ) -> tuple[torch.Tensor, object]: ...
+
+
+class _BeatsModelLike(Protocol):
+    encoder: _BeatsEncoderLike
+    patch_embedding: nn.Module
+    layer_norm: nn.Module
+    post_extract_proj: Optional[nn.Module]
+    dropout_input: nn.Module
+    predictor_dropout: nn.Module
+    predictor: Optional[nn.Module]
+
+    def preprocess(
+        self, waveform: torch.Tensor, *, fbank_mean: float, fbank_std: float
+    ) -> torch.Tensor: ...
+
+    def forward_padding_mask(
+        self, features: torch.Tensor, padding_mask: torch.Tensor
+    ) -> torch.Tensor: ...
+
+
 class BeatsAudioModelWrapper(BaseAudioModelWrapper):
     """Differentiable wrapper around local UniLM BEATs checkpoints."""
 
@@ -107,12 +138,19 @@ class BeatsAudioModelWrapper(BaseAudioModelWrapper):
         self,
         model: nn.Module,
         tokenizer: nn.Module,
+        classifier_label_mids: Optional[Sequence[str]] = None,
         target_sample_rate: int = 16_000,
         fbank_mean: float = 15.41663,
         fbank_std: float = 6.55582,
     ) -> None:
         super().__init__(model=model)
+        self._beats_model = cast(_BeatsModelLike, model)
         self.tokenizer = tokenizer
+        self.classifier_label_mids = (
+            [str(mid) for mid in classifier_label_mids]
+            if classifier_label_mids is not None
+            else None
+        )
         self.target_sample_rate = target_sample_rate
         self.fbank_mean = fbank_mean
         self.fbank_std = fbank_std
@@ -136,10 +174,10 @@ class BeatsAudioModelWrapper(BaseAudioModelWrapper):
 
     @property
     def _has_predictor_head(self) -> bool:
-        return getattr(self.model, "predictor", None) is not None
+        return self._beats_model.predictor is not None
 
     def _build_transformer_layer_names(self) -> list[str]:
-        layer_count = len(getattr(self.model.encoder, "layers"))
+        layer_count = len(self._beats_model.encoder.layers)
         return [f"transformer_layer_{idx:02d}" for idx in range(layer_count)]
 
     @property
@@ -170,7 +208,7 @@ class BeatsAudioModelWrapper(BaseAudioModelWrapper):
     def preprocess(self, waveform: torch.Tensor, sr: int) -> torch.Tensor:
         waveform = self._ensure_batch_waveform(waveform)
         waveform = self._resample_if_needed(waveform, sr)
-        return self.model.preprocess(
+        return self._beats_model.preprocess(
             waveform, fbank_mean=self.fbank_mean, fbank_std=self.fbank_std
         )
 
@@ -179,7 +217,7 @@ class BeatsAudioModelWrapper(BaseAudioModelWrapper):
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         layer_outputs: dict[str, torch.Tensor] = {}
         hook_handles = []
-        for idx, layer in enumerate(self.model.encoder.layers):
+        for idx, layer in enumerate(self._beats_model.encoder.layers):
             layer_name = f"transformer_layer_{idx:02d}"
 
             def _capture_layer_output(_module, _args, output, name=layer_name):
@@ -188,22 +226,23 @@ class BeatsAudioModelWrapper(BaseAudioModelWrapper):
             hook_handles.append(layer.register_forward_hook(_capture_layer_output))
 
         try:
-            final_features, _ = self.model.encoder(
+            final_features, _ = self._beats_model.encoder(
                 encoder_input, padding_mask=padding_mask, layer=None
             )
         finally:
             for handle in hook_handles:
                 handle.remove()
 
-        if self.model.encoder.layer_norm_first:
-            final_features = self.model.encoder.layer_norm(final_features)
         return final_features, layer_outputs
 
     def _compute_logits(
         self, final_features: torch.Tensor, padding_mask: Optional[torch.Tensor]
     ) -> torch.Tensor:
-        logits = self.model.predictor_dropout(final_features)
-        logits = self.model.predictor(logits)
+        predictor = self._beats_model.predictor
+        if predictor is None:
+            raise RuntimeError("BEATs predictor head is not available on this checkpoint.")
+        logits = self._beats_model.predictor_dropout(final_features)
+        logits = predictor(logits)
         if padding_mask is not None and padding_mask.any():
             logits = logits.clone()
             logits[padding_mask] = 0
@@ -243,20 +282,20 @@ class BeatsAudioModelWrapper(BaseAudioModelWrapper):
         padding_mask = None
 
         fbank = input_features.unsqueeze(1)
-        patch_features = self.model.patch_embedding(fbank)
+        patch_features = self._beats_model.patch_embedding(fbank)
         patch_features = patch_features.reshape(
             patch_features.shape[0], patch_features.shape[1], -1
         ).transpose(1, 2)
-        patch_features = self.model.layer_norm(patch_features)
+        patch_features = self._beats_model.layer_norm(patch_features)
         if padding_mask is not None:
-            padding_mask = self.model.forward_padding_mask(patch_features, padding_mask)
+            padding_mask = self._beats_model.forward_padding_mask(patch_features, padding_mask)
 
         projected_features = (
-            self.model.post_extract_proj(patch_features)
-            if self.model.post_extract_proj is not None
+            self._beats_model.post_extract_proj(patch_features)
+            if self._beats_model.post_extract_proj is not None
             else patch_features
         )
-        encoder_input = self.model.dropout_input(projected_features)
+        encoder_input = self._beats_model.dropout_input(projected_features)
         final_features, layer_outputs = self._collect_encoder_outputs(
             encoder_input=encoder_input, padding_mask=padding_mask
         )
@@ -318,6 +357,12 @@ def load_beats_audio_model(
     )
     beats_model = beats_cls(beats_config_cls(checkpoint["cfg"]))
     beats_model.load_state_dict(checkpoint["model"])
+    label_dict = checkpoint.get("label_dict")
+    classifier_label_mids = None
+    if isinstance(label_dict, dict):
+        classifier_label_mids = [
+            str(mid) for _idx, mid in sorted(label_dict.items(), key=lambda item: int(item[0]))
+        ]
 
     tokenizer_checkpoint = torch.load(
         resolved_tokenizer_checkpoint_path, map_location=device, **torch_load_kwargs
@@ -326,9 +371,11 @@ def load_beats_audio_model(
     tokenizer_model.load_state_dict(tokenizer_checkpoint["model"])
     tokenizer_model.eval()
 
-    wrapper = BeatsAudioModelWrapper(model=beats_model, tokenizer=tokenizer_model).to(
-        device
-    )
+    wrapper = BeatsAudioModelWrapper(
+        model=beats_model,
+        tokenizer=tokenizer_model,
+        classifier_label_mids=classifier_label_mids,
+    ).to(device)
     if freeze:
         wrapper.freeze()
     else:

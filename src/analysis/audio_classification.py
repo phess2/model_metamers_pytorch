@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import csv
+from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 import torch
+
+_DEFAULT_BEATS_LABEL_MAP_CSV = (
+    Path(__file__).resolve().parent
+    / "metadata"
+    / "beats_iter3_plus_as2m_audioset_label_map.csv"
+)
 
 
 def decode_audioset_labels(example: Mapping[str, Any]) -> list[int]:
@@ -27,6 +35,77 @@ def multihot_topk_hit(topk_indices: Sequence[int], true_labels: Sequence[int]) -
     return any(int(pred_idx) in true_label_set for pred_idx in topk_indices)
 
 
+def _load_audioset_to_model_remapper(csv_path: Path) -> dict[int, int]:
+    remapper: dict[int, int] = {}
+    if not csv_path.exists():
+        return remapper
+    with csv_path.open("r", encoding="utf-8", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            audioset_idx = row.get("audioset_index")
+            model_idx = row.get("model_index")
+            if audioset_idx is None or model_idx is None:
+                continue
+            remapper[int(audioset_idx)] = int(model_idx)
+    return remapper
+
+
+def _resolve_mapping_csv_path(mapping_csv_path: str | Path | None) -> Path:
+    return (
+        Path(mapping_csv_path)
+        if mapping_csv_path is not None
+        else _DEFAULT_BEATS_LABEL_MAP_CSV
+    )
+
+
+def remap_audioset_labels_to_model_indices(
+    true_labels: Sequence[int],
+    model_label_mids: Sequence[str] | None = None,
+    mapping_csv_path: str | Path | None = None,
+) -> list[int]:
+    """
+    Remap canonical AudioSet label indices to model-output indices.
+
+    Remapping only runs when ``model_label_mids`` is provided (e.g., fine-tuned
+    BEATs with classifier head). If remapping data is unavailable, labels are
+    returned unchanged.
+    """
+    labels_int = [int(x) for x in true_labels]
+    if not model_label_mids:
+        return labels_int
+    csv_path = _resolve_mapping_csv_path(mapping_csv_path)
+    remapper = _load_audioset_to_model_remapper(csv_path)
+    if not remapper:
+        return labels_int
+    remapped = [remapper[label] for label in labels_int if label in remapper]
+    return remapped or labels_int
+
+
+def remap_model_indices_to_audioset_labels(
+    predicted_indices: Sequence[int],
+    model_label_mids: Sequence[str] | None = None,
+    mapping_csv_path: str | Path | None = None,
+) -> list[int]:
+    """
+    Remap model-output indices back into canonical AudioSet label indices.
+
+    Remapping only runs when ``model_label_mids`` is provided.
+    """
+    indices_int = [int(x) for x in predicted_indices]
+    if not model_label_mids:
+        return indices_int
+    csv_path = _resolve_mapping_csv_path(mapping_csv_path)
+    audioset_to_model = _load_audioset_to_model_remapper(csv_path)
+    if not audioset_to_model:
+        return indices_int
+    model_to_audioset = {
+        int(model_idx): int(audioset_idx)
+        for audioset_idx, model_idx in audioset_to_model.items()
+    }
+    remapped = [model_to_audioset[idx] for idx in indices_int if idx in model_to_audioset]
+    return remapped or indices_int
+
+
 def summarize_multilabel_logits(
     logits: torch.Tensor,
     true_labels: Sequence[int],
@@ -43,7 +122,9 @@ def summarize_multilabel_logits(
     if logits.dim() != 1:
         raise ValueError(f"Expected 1D logits tensor, got shape {tuple(logits.shape)}")
 
-    probs = torch.softmax(logits, dim=0)
+    # AudioSet classification is multilabel, so independent sigmoid
+    # probabilities are the appropriate confidence scores.
+    probs = torch.sigmoid(logits)
     num_classes = int(logits.shape[0])
     top1_k = 1
     top5_k = min(5, num_classes)
@@ -62,6 +143,7 @@ def summarize_multilabel_logits(
         "predicted_top5_label_indices": [int(x) for x in top5_indices],
         "top1_hit": multihot_topk_hit(top1_indices, true_labels_int),
         "top5_hit": multihot_topk_hit(top5_indices, true_labels_int),
+        "true_label_max_probability": true_label_max_softmax,
         "true_label_max_softmax": true_label_max_softmax,
         "num_true_labels": len(true_labels_int),
     }

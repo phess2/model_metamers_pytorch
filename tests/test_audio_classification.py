@@ -31,6 +31,12 @@ _GENERATE_AUDIO_ADVERSARIALS = _load_module_from_file(
 
 aggregate_multilabel_topk = _AUDIO_CLASSIFICATION.aggregate_multilabel_topk
 decode_audioset_labels = _AUDIO_CLASSIFICATION.decode_audioset_labels
+remap_audioset_labels_to_model_indices = (
+    _AUDIO_CLASSIFICATION.remap_audioset_labels_to_model_indices
+)
+remap_model_indices_to_audioset_labels = (
+    _AUDIO_CLASSIFICATION.remap_model_indices_to_audioset_labels
+)
 summarize_multilabel_logits = _AUDIO_CLASSIFICATION.summarize_multilabel_logits
 
 
@@ -65,6 +71,45 @@ class AudioClassificationTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["top5_acc"], 1.0)
         self.assertEqual(metrics["num_samples"], 2)
         self.assertEqual(metrics["num_scored_samples"], 2)
+
+    def test_multilabel_summary_uses_sigmoid_probabilities(self):
+        summary = summarize_multilabel_logits(
+            torch.tensor([[0.0, 0.0, -2.0]], dtype=torch.float32),
+            true_labels=[0, 1],
+        )
+        self.assertAlmostEqual(summary["true_label_max_softmax"], 0.5, places=6)
+        self.assertAlmostEqual(summary["true_label_max_probability"], 0.5, places=6)
+
+    def test_beats_label_remap_matches_known_indices(self):
+        remapped = remap_audioset_labels_to_model_indices(
+            true_labels=[0, 137],
+            model_label_mids=["/m/09x0r", "/m/04rlf"],
+        )
+        self.assertEqual(remapped, [20, 2])
+
+    def test_label_remap_noop_without_finetuned_beats_mids(self):
+        labels = [0, 137, 300]
+        remapped = remap_audioset_labels_to_model_indices(
+            true_labels=labels,
+            model_label_mids=None,
+        )
+        self.assertEqual(remapped, labels)
+
+    def test_label_remap_noop_when_mapping_file_missing(self):
+        labels = [0, 137]
+        remapped = remap_audioset_labels_to_model_indices(
+            true_labels=labels,
+            model_label_mids=["/m/09x0r", "/m/04rlf"],
+            mapping_csv_path="/tmp/does_not_exist_beats_label_map.csv",
+        )
+        self.assertEqual(remapped, labels)
+
+    def test_beats_prediction_indices_map_back_to_canonical_audioset(self):
+        mapped = remap_model_indices_to_audioset_labels(
+            predicted_indices=[20, 2],
+            model_label_mids=["/m/09x0r", "/m/04rlf"],
+        )
+        self.assertEqual(mapped, [0, 137])
 
 
 class AudioExampleLoadingTests(unittest.TestCase):

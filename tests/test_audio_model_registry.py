@@ -358,7 +358,9 @@ class AudioModelRegistryTests(unittest.TestCase):
 
         self.assertTrue(any("BEATs_iter3.pt" in call for call in calls))
         self.assertTrue(any("Tokenizer_iter3.pt" in call for call in calls))
-        self.assertTrue(any("BEATs_iter3_plus_AS2M.pt" in call for call in calls))
+        self.assertTrue(
+            any("BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt1.pt" in call for call in calls)
+        )
         self.assertTrue(any("Tokenizer_iter3_plus_AS2M.pt" in call for call in calls))
 
     def test_beats_wrapper_forward_with_representations_keeps_gradient(self):
