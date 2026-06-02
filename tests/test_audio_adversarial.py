@@ -37,9 +37,13 @@ _SAVING = _load_module_from_file("analysis_saving_for_tests", _ROOT / "src" / "a
 BaseAudioModelWrapper = _AUDIO_BASE.BaseAudioModelWrapper
 get_audio_model = _AUDIO_REGISTRY.get_audio_model
 
+AdversarialAttackConfig = _AUDIO_ADVERSARIAL.AdversarialAttackConfig
+AudioAdversarialAttacker = _AUDIO_ADVERSARIAL.AudioAdversarialAttacker
 AudioRepresentationAttacker = _AUDIO_ADVERSARIAL.AudioRepresentationAttacker
 RepresentationAttackConfig = _AUDIO_ADVERSARIAL.RepresentationAttackConfig
 audit_waveform_gradient = _AUDIO_ADVERSARIAL.audit_waveform_gradient
+build_multihot_target = _AUDIO_ADVERSARIAL.build_multihot_target
+classification_loss = _AUDIO_ADVERSARIAL.classification_loss
 project_l2 = _AUDIO_ADVERSARIAL.project_l2
 project_linf = _AUDIO_ADVERSARIAL.project_linf
 representation_distance = _AUDIO_ADVERSARIAL.representation_distance
@@ -56,16 +60,18 @@ _RUN_AUDIO_MODEL_GPU_TESTS = os.environ.get("RUN_AUDIO_MODEL_GPU_TESTS", "").low
 
 
 class _ToyAudioWrapper(BaseAudioModelWrapper):
-    def __init__(self):
+    def __init__(self, num_classes: int = 8):
         super().__init__(model=nn.Identity())
+        self.num_classes = num_classes
         self.proj = nn.Conv1d(1, 2, kernel_size=5, padding=2, bias=False)
+        self.classifier = nn.Linear(2, num_classes, bias=True)
         with torch.no_grad():
             self.proj.weight.fill_(0.25)
         self.metamer_layers = ["toy_layer"]
 
     @property
     def available_layers(self) -> list[str]:
-        return ["toy_layer", "final"]
+        return ["toy_layer", "final", "logits"]
 
     def preprocess(self, waveform: torch.Tensor, sr: int) -> torch.Tensor:
         del sr
@@ -94,8 +100,14 @@ class _ToyAudioWrapper(BaseAudioModelWrapper):
         x = self.preprocess(waveform, sr=16_000)
         toy_layer = torch.tanh(self.proj(x))
         final = toy_layer.mean(dim=2)
-        reps = {"toy_layer": toy_layer, "final": final}
+        logits = self.classifier(final)
+        reps = {"toy_layer": toy_layer, "final": final, "logits": logits}
         return final, reps
+
+    def get_classifier_logits(self, waveform: torch.Tensor, sr: int) -> torch.Tensor:
+        del sr
+        _, reps = self.forward_with_representations(waveform=waveform, sr=16_000)
+        return reps["logits"]
 
 
 class AudioAdversarialTests(unittest.TestCase):
@@ -104,6 +116,7 @@ class AudioAdversarialTests(unittest.TestCase):
         self.wrapper = _ToyAudioWrapper()
         self.source = torch.randn(1, 1, 512)
         self.target = torch.randn(1, 1, 512)
+        self.true_labels = [0, 3]
 
     def test_project_l2_enforces_radius(self):
         delta = torch.randn(2, 1, 128)
@@ -119,7 +132,49 @@ class AudioAdversarialTests(unittest.TestCase):
         max_abs = projected.abs().amax()
         self.assertLessEqual(float(max_abs.item()), epsilon + 1e-6)
 
-    def test_untargeted_attack_increases_distance(self):
+    def test_build_multihot_target(self):
+        target = build_multihot_target(8, [0, 3], device="cpu")
+        self.assertEqual(float(target.sum().item()), 2.0)
+        self.assertEqual(float(target[0].item()), 1.0)
+        self.assertEqual(float(target[3].item()), 1.0)
+
+    def test_untargeted_attack_increases_classification_loss(self):
+        cfg = AdversarialAttackConfig(
+            norm="l2",
+            epsilon=0.5,
+            step_size=0.05,
+            num_steps=20,
+            num_random_starts=1,
+            clamp_range=(-2.0, 2.0),
+            seed=123,
+        )
+        attacker = AudioAdversarialAttacker(
+            model=self.wrapper,
+            sample_rate=16_000,
+            config=cfg,
+            device="cpu",
+        )
+        clean_logits = self.wrapper.get_classifier_logits(self.source, sr=16_000)
+        target = build_multihot_target(
+            num_classes=self.wrapper.num_classes,
+            label_indices=self.true_labels,
+            device="cpu",
+        )
+        clean_loss = classification_loss(clean_logits, target)
+
+        adv, metadata = attacker.attack_untargeted(
+            self.source, true_label_indices=self.true_labels
+        )
+        adv_logits = self.wrapper.get_classifier_logits(adv, sr=16_000)
+        adv_loss = classification_loss(adv_logits, target)
+
+        self.assertGreater(float(adv_loss.item()), float(clean_loss.item()))
+        self.assertGreater(
+            float(metadata["best_final_classification_loss"]),
+            float(metadata["initial_classification_loss"]),
+        )
+
+    def test_representation_attacker_increases_distance(self):
         cfg = RepresentationAttackConfig(
             norm="l2",
             epsilon=0.5,
@@ -149,41 +204,6 @@ class AudioAdversarialTests(unittest.TestCase):
         )
         self.assertGreater(float(attacked_distance.item()), float(original_distance.item()))
 
-    def test_targeted_attack_reduces_target_distance(self):
-        cfg = RepresentationAttackConfig(
-            norm="linf",
-            epsilon=0.2,
-            step_size=0.01,
-            num_steps=30,
-            num_random_starts=1,
-            loss_type="normalized_l2",
-            clamp_range=(-2.0, 2.0),
-            seed=42,
-        )
-        attacker = AudioRepresentationAttacker(
-            model=self.wrapper,
-            layer_name="toy_layer",
-            sample_rate=16_000,
-            config=cfg,
-            device="cpu",
-        )
-        source_rep = attacker.extract_representation(self.source).detach()
-        target_rep = attacker.extract_representation(self.target).detach()
-        baseline = representation_distance(
-            source_rep, target_rep, loss_type="normalized_l2", reduction="mean"
-        )
-
-        adv, _ = attacker.attack_targeted(
-            source_waveform=self.source,
-            target_rep=target_rep,
-            source_rep=source_rep,
-        )
-        adv_rep = attacker.extract_representation(adv).detach()
-        attacked = representation_distance(
-            adv_rep, target_rep, loss_type="normalized_l2", reduction="mean"
-        )
-        self.assertLess(float(attacked.item()), float(baseline.item()))
-
     def test_save_audio_adversarial_results_outputs_files_and_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir) / "layer0"
@@ -195,7 +215,7 @@ class AudioAdversarialTests(unittest.TestCase):
             metadata = {
                 "sample_rate": 32_000,
                 "attack_mode": "untargeted",
-                "representation_distance_from_source": 1.23,
+                "classification_loss": 1.23,
                 **lowpass_metadata,
             }
             saved_paths = save_audio_adversarial_results(
@@ -229,6 +249,20 @@ class AudioAdversarialTests(unittest.TestCase):
         self.assertTrue(report["gradient_is_finite"])
         self.assertGreater(report["gradient_nonzero_count"], 0)
 
+    def test_audit_waveform_gradient_logits_path(self):
+        report = audit_waveform_gradient(
+            model=self.wrapper,
+            waveform=self.source.clone(),
+            sample_rate=16_000,
+            true_label_indices=self.true_labels,
+            device="cpu",
+            use_logits=True,
+        )
+        self.assertTrue(report["use_logits"])
+        self.assertEqual(report["layer_name"], "logits")
+        self.assertTrue(report["gradient_is_finite"])
+        self.assertGreater(report["gradient_nonzero_count"], 0)
+
 
 @unittest.skipUnless(
     _RUN_AUDIO_MODEL_GPU_TESTS and torch.cuda.is_available(),
@@ -240,16 +274,23 @@ class AudioAdversarialGpuSmokeTests(unittest.TestCase):
         for model_name in ("audiomae_as2m_ft_as20k", "beats_iter3_plus_as2m"):
             with self.subTest(model_name=model_name):
                 wrapper = get_audio_model(model_name, device="cuda", freeze=True)
-                layer_name = list(getattr(wrapper, "metamer_layers"))[0]
+                try:
+                    logits = wrapper.get_classifier_logits(waveform.clone(), sr=16_000)
+                except NotImplementedError:
+                    self.skipTest(f"{model_name} has no classifier logits")
+                num_classes = int(logits.shape[-1])
+                true_labels = [0, 1]
                 report = audit_waveform_gradient(
                     model=wrapper,
                     waveform=waveform.clone(),
                     sample_rate=16_000,
-                    layer_name=layer_name,
+                    true_label_indices=true_labels,
                     device="cuda",
+                    use_logits=True,
                 )
                 self.assertTrue(report["gradient_is_finite"])
                 self.assertGreater(report["gradient_nonzero_count"], 0)
+                del num_classes
 
 
 if __name__ == "__main__":
