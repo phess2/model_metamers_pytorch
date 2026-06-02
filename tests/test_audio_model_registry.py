@@ -16,6 +16,7 @@ _AUDIO_REGISTRY = importlib.import_module("models.audio.registry")
 _AUDIO_AUDIOMAE = importlib.import_module("models.audio.audiomae")
 _AUDIO_CLAP = importlib.import_module("models.audio.clap")
 _AUDIO_BEATS = importlib.import_module("models.audio.beats")
+_AUDIO_PANNS = importlib.import_module("models.audio.panns_cnn14")
 
 BaseAudioModelWrapper = _AUDIO_BASE.BaseAudioModelWrapper
 AudioMaeAudioModelWrapper = _AUDIO_AUDIOMAE.AudioMaeAudioModelWrapper
@@ -23,6 +24,7 @@ load_audiomae_audio_model = _AUDIO_AUDIOMAE.load_audiomae_audio_model
 ClapAudioModelWrapper = _AUDIO_CLAP.ClapAudioModelWrapper
 load_clap_audio_model = _AUDIO_CLAP.load_clap_audio_model
 BeatsAudioModelWrapper = _AUDIO_BEATS.BeatsAudioModelWrapper
+PannsCnn14AudioModelWrapper = _AUDIO_PANNS.PannsCnn14AudioModelWrapper
 get_audio_model = _AUDIO_REGISTRY.get_audio_model
 list_audio_models = _AUDIO_REGISTRY.list_audio_models
 
@@ -222,6 +224,58 @@ def _fake_beats_import_module(module_name: str):
     raise ImportError(module_name)
 
 
+class _FakePannsSpectrogram(nn.Module):
+    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        if waveform.dim() != 2:
+            raise ValueError(f"Expected waveform [B, T], got {tuple(waveform.shape)}")
+        features = waveform.mean(dim=1, keepdim=True).unsqueeze(-1).unsqueeze(-1)
+        features = features.repeat(1, 1, 64, 513)
+        return features
+
+
+class _FakePannsLogMel(nn.Module):
+    def forward(self, spectrogram: torch.Tensor) -> torch.Tensor:
+        return spectrogram[..., :64]
+
+
+class _FakePannsConvBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+
+    def forward(self, x, pool_size=(2, 2), pool_type="avg"):
+        x = F.relu(self.conv(x))
+        if pool_type != "avg":
+            raise ValueError("Only avg pooling is supported in this fake block.")
+        return F.avg_pool2d(x, kernel_size=pool_size)
+
+
+class _FakePannsCnn14(nn.Module):
+    def __init__(
+        self,
+        sample_rate: int,
+        window_size: int,
+        hop_size: int,
+        mel_bins: int,
+        fmin: int,
+        fmax: int,
+        classes_num: int,
+    ):
+        super().__init__()
+        del sample_rate, window_size, hop_size, mel_bins, fmin, fmax
+        self.spectrogram_extractor = _FakePannsSpectrogram()
+        self.logmel_extractor = _FakePannsLogMel()
+        self.bn0 = nn.BatchNorm2d(64)
+        self.conv_block1 = _FakePannsConvBlock(channels=1)
+        self.conv_block2 = _FakePannsConvBlock(channels=1)
+        self.conv_block3 = _FakePannsConvBlock(channels=1)
+        self.conv_block4 = _FakePannsConvBlock(channels=1)
+        self.conv_block5 = _FakePannsConvBlock(channels=1)
+        self.conv_block6 = _FakePannsConvBlock(channels=1)
+        self.fc1 = nn.Linear(1, 2048, bias=True)
+        self.fc_audioset = nn.Linear(2048, classes_num, bias=True)
+
+
 class AudioModelRegistryTests(unittest.TestCase):
     def test_freeze_disables_model_parameter_gradients(self):
         wrapper = _DummyAudioWrapper(nn.Conv1d(1, 2, kernel_size=3))
@@ -258,6 +312,7 @@ class AudioModelRegistryTests(unittest.TestCase):
             "beats_iter3",
             "beats_iter3_plus_as2m",
             "clap",
+            "panns_cnn14",
             "maskspec",
         ):
             self.assertIn(model_name, names)
@@ -331,6 +386,37 @@ class AudioModelRegistryTests(unittest.TestCase):
                 freeze=False,
             )
         self.assertIsInstance(wrapper, BeatsAudioModelWrapper)
+
+    def test_panns_registry_entry_loads_concrete_wrapper(self):
+        fake_model = _FakePannsCnn14(
+            sample_rate=32000,
+            window_size=1024,
+            hop_size=320,
+            mel_bins=64,
+            fmin=50,
+            fmax=14000,
+            classes_num=527,
+        )
+        prefixed_state = {
+            f"backbone.{name}": tensor.clone()
+            for name, tensor in fake_model.state_dict().items()
+        }
+        with patch.object(
+            _AUDIO_PANNS,
+            "_load_panns_cnn14_class",
+            return_value=_FakePannsCnn14,
+        ), patch.object(
+            _AUDIO_PANNS,
+            "_load_panns_state_dict",
+            return_value=prefixed_state,
+        ):
+            wrapper = get_audio_model("panns_cnn14", device="cpu", freeze=False)
+
+        self.assertIsInstance(wrapper, PannsCnn14AudioModelWrapper)
+        waveform = torch.randn(1, 1, 64)
+        logits = wrapper.get_classifier_logits(waveform, sr=16_000)
+        self.assertEqual(tuple(logits.shape), (1, 527))
+        self.assertTrue(torch.isfinite(logits).all())
 
     def test_beats_aliases_resolve_expected_default_checkpoint_pairs(self):
         calls: list[str] = []

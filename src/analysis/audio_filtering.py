@@ -10,6 +10,8 @@ def resolve_audio_lowpass_cutoff_hz(model_name: str) -> int | None:
     normalized = model_name.strip().lower()
     if normalized.startswith("audiomae") or normalized.startswith("beats"):
         return 8_000
+    if normalized.startswith("panns"):
+        return 16_000
     if normalized.startswith("clap"):
         return 24_000
     return None

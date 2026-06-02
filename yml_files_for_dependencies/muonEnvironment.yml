@@ -168,6 +168,7 @@ dependencies:
       - tinycss2==1.4.0
       - torch==2.9.1+cu130
       - torchaudio==2.9.1+cu130
+      - torchlibrosa==0.1.0
       - torchmetrics==1.8.2
       - torchvision==0.24.1+cu130
       - tornado==6.5.4

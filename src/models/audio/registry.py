@@ -16,6 +16,7 @@ from .beats import (
     load_beats_iter3_plus_as2m_audio_model,
 )
 from .clap import load_clap_audio_model
+from .panns_cnn14 import load_panns_cnn14_audio_model
 
 AudioModelFactory = Callable[..., BaseAudioModelWrapper]
 
@@ -73,6 +74,7 @@ def _register_builtins() -> None:
         "audiomae_as2m_ft_as20k", load_audiomae_as2m_ft_as20k_audio_model
     )
     register_audio_model("clap", load_clap_audio_model)
+    register_audio_model("panns_cnn14", load_panns_cnn14_audio_model)
 
 
 _register_builtins()
