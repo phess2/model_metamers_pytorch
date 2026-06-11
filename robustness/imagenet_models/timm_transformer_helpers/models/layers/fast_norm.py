@@ -1,4 +1,4 @@
-""" 'Fast' Normalization Functions
+"""'Fast' Normalization Functions
 
 For GroupNorm and LayerNorm these functions bypass typical AMP upcast to float32.
 
@@ -6,6 +6,7 @@ Additionally, for LayerNorm, the APEX fused LN is used if available (which also 
 
 Hacked together by / Copyright 2022 Ross Wightman
 """
+
 from typing import List, Optional
 
 import torch
@@ -13,6 +14,7 @@ from torch.nn import functional as F
 
 try:
     from apex.normalization.fused_layer_norm import fused_layer_norm_affine
+
     has_apex = True
 except ImportError:
     has_apex = False
@@ -36,7 +38,7 @@ def fast_group_norm(
     num_groups: int,
     weight: Optional[torch.Tensor] = None,
     bias: Optional[torch.Tensor] = None,
-    eps: float = 1e-5
+    eps: float = 1e-5,
 ) -> torch.Tensor:
     if torch.jit.is_scripting():
         # currently cannot use is_autocast_enabled within torchscript
@@ -58,7 +60,7 @@ def fast_layer_norm(
     normalized_shape: List[int],
     weight: Optional[torch.Tensor] = None,
     bias: Optional[torch.Tensor] = None,
-    eps: float = 1e-5
+    eps: float = 1e-5,
 ) -> torch.Tensor:
     if torch.jit.is_scripting():
         # currently cannot use is_autocast_enabled within torchscript
