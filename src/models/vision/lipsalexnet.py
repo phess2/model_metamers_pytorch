@@ -21,60 +21,38 @@ class LipsAlexNet(LipsModel):
         num_classes: int = 1000,
         w_max: float = 1.0,
         projection: Optional[str] = None,
+        bound_method: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.w_max = w_max
         self.projection = projection
+        self.bound_method = bound_method
+        layer_kwargs = {
+            "w_max": w_max,
+            "projection": projection,
+            "bound_method": bound_method,
+        }
 
         self.features = nn.Sequential(
             LipsConv2d(
                 3,
                 64,
                 kernel_size=11,
-                w_max=w_max,
                 stride=4,
                 padding=2,
-                projection=projection,
+                **layer_kwargs,
             ),
             nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=3, stride=2),
-            LipsConv2d(
-                64,
-                192,
-                kernel_size=5,
-                w_max=w_max,
-                padding=2,
-                projection=projection,
-            ),
+            LipsConv2d(64, 192, kernel_size=5, padding=2, **layer_kwargs),
             nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=3, stride=2),
-            LipsConv2d(
-                192,
-                384,
-                kernel_size=3,
-                w_max=w_max,
-                padding=1,
-                projection=projection,
-            ),
+            LipsConv2d(192, 384, kernel_size=3, padding=1, **layer_kwargs),
             nn.ReLU(inplace=False),
-            LipsConv2d(
-                384,
-                256,
-                kernel_size=3,
-                w_max=w_max,
-                padding=1,
-                projection=projection,
-            ),
+            LipsConv2d(384, 256, kernel_size=3, padding=1, **layer_kwargs),
             nn.ReLU(inplace=False),
-            LipsConv2d(
-                256,
-                256,
-                kernel_size=3,
-                w_max=w_max,
-                padding=1,
-                projection=projection,
-            ),
+            LipsConv2d(256, 256, kernel_size=3, padding=1, **layer_kwargs),
             nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
@@ -105,12 +83,12 @@ class LipsAlexNet(LipsModel):
 
         self.classifier = nn.Sequential(
             nn.Dropout(),
-            LipsLinear(256 * 6 * 6, 4096, w_max=w_max, projection=projection),
+            LipsLinear(256 * 6 * 6, 4096, **layer_kwargs),
             nn.ReLU(inplace=False),
             nn.Dropout(),
-            LipsLinear(4096, 4096, w_max=w_max, projection=projection),
+            LipsLinear(4096, 4096, **layer_kwargs),
             nn.ReLU(inplace=False),
-            LipsLinear(4096, num_classes, w_max=w_max, projection=projection),
+            LipsLinear(4096, num_classes, **layer_kwargs),
         )
         self.classifier_names = [
             "dropout0",
@@ -146,7 +124,8 @@ class LipsAlexNet(LipsModel):
     def __str__(self):
         return (
             f"LipsAlexNet(num_classes={self.num_classes}, "
-            f"w_max={self.w_max}, projection={self.projection})"
+            f"w_max={self.w_max}, projection={self.projection}, "
+            f"bound_method={self.bound_method})"
         )
 
     def forward_with_representations(self, x, fake_relu=False):

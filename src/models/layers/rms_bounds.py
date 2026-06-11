@@ -5,7 +5,7 @@ from collections.abc import Iterable
 import torch
 from torch import nn
 
-from .LipsLayers import _power_iterate
+from .norm_ops import power_iterate as _power_iterate
 
 
 def product_bound(bounds: Iterable[float]) -> float:

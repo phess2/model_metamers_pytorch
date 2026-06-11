@@ -1,0 +1,32 @@
+{
+    "description": "Nightly search for Lipschitz bound methods that beat PGD-trained robustness.",
+    "goal": {
+        "baseline_config": "configs/vision/robust_v1/resnet50_l2_3_robust.json",
+        "clean_acc_tolerance": 0.02,
+        "pgd_epsilons": [0, 1, 2, 3],
+        "beat_epsilons": [1, 2, 3],
+        "require_beat_at_all_eps": true
+    },
+    "template_config": "configs/vision/lipsresnet50_v1/lipsresnet50_w_max_0_SGD.json",
+    "search_space": {
+        "model_name": ["lipsresnet"],
+        "bound_method": ["modular_linf", "rms_spectral"],
+        "projection": {
+            "modular_linf": ["modular_linf_cap"],
+            "rms_spectral": ["spectral_normalize", "orthogonalize", null]
+        },
+        "w_max": [0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0],
+        "optimizer_lr": [0.1, 0.2]
+    },
+    "pgd_eval": {
+        "epsilons": [0, 0.5, 1, 2, 3],
+        "num_steps": 100,
+        "step_size": 0.1,
+        "indices": "0-399"
+    },
+    "output": {
+        "generated_config_dir": "configs/nightly/generated",
+        "state_dir": "experiments/nightly_bound_search",
+        "ready_for_morning_file": "experiments/nightly_bound_search/READY_FOR_MORNING.json"
+    }
+}

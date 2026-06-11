@@ -12,7 +12,14 @@ from ..layers.LipsLayers import LipsConv2d, LipsLinear
 # ---------------------------------------------------------------------------
 
 
-def conv3x3(in_planes, out_planes, stride=1, w_max=1.0, projection=None):
+def conv3x3(
+    in_planes,
+    out_planes,
+    stride=1,
+    w_max=1.0,
+    projection=None,
+    bound_method=None,
+):
     """3x3 Lipschitz convolution with padding."""
     return LipsConv2d(
         in_planes,
@@ -23,10 +30,18 @@ def conv3x3(in_planes, out_planes, stride=1, w_max=1.0, projection=None):
         bias=False,
         w_max=w_max,
         projection=projection,
+        bound_method=bound_method,
     )
 
 
-def conv1x1(in_planes, out_planes, stride=1, w_max=1.0, projection=None):
+def conv1x1(
+    in_planes,
+    out_planes,
+    stride=1,
+    w_max=1.0,
+    projection=None,
+    bound_method=None,
+):
     """1x1 Lipschitz convolution."""
     return LipsConv2d(
         in_planes,
@@ -36,6 +51,7 @@ def conv1x1(in_planes, out_planes, stride=1, w_max=1.0, projection=None):
         bias=False,
         w_max=w_max,
         projection=projection,
+        bound_method=bound_method,
     )
 
 
@@ -68,17 +84,29 @@ class LipsBasicBlock(nn.Module):
         last_block=False,
         w_max=1.0,
         projection=None,
+        bound_method=None,
         total_residual_connections=1,
     ):
         super().__init__()
         if total_residual_connections <= 0:
             raise ValueError("total_residual_connections must be a positive integer.")
         self.conv1 = conv3x3(
-            inplanes, planes, stride=stride, w_max=w_max, projection=projection
+            inplanes,
+            planes,
+            stride=stride,
+            w_max=w_max,
+            projection=projection,
+            bound_method=bound_method,
         )
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=False)
-        self.conv2 = conv3x3(planes, planes, w_max=w_max, projection=projection)
+        self.conv2 = conv3x3(
+            planes,
+            planes,
+            w_max=w_max,
+            projection=projection,
+            bound_method=bound_method,
+        )
         self.bn2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.stride = stride
@@ -127,19 +155,31 @@ class LipsBottleneck(nn.Module):
         last_block=False,
         w_max=1.0,
         projection=None,
+        bound_method=None,
         total_residual_connections=1,
     ):
         super().__init__()
         if total_residual_connections <= 0:
             raise ValueError("total_residual_connections must be a positive integer.")
-        self.conv1 = conv1x1(inplanes, planes, w_max=w_max, projection=projection)
+        self.conv1 = conv1x1(
+            inplanes, planes, w_max=w_max, projection=projection, bound_method=bound_method
+        )
         self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = conv3x3(
-            planes, planes, stride=stride, w_max=w_max, projection=projection
+            planes,
+            planes,
+            stride=stride,
+            w_max=w_max,
+            projection=projection,
+            bound_method=bound_method,
         )
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = conv1x1(
-            planes, planes * self.expansion, w_max=w_max, projection=projection
+            planes,
+            planes * self.expansion,
+            w_max=w_max,
+            projection=projection,
+            bound_method=bound_method,
         )
         self.bn3 = nn.BatchNorm2d(planes * self.expansion)
         self.relu = nn.ReLU(inplace=False)
@@ -204,6 +244,7 @@ class LipsResNet(LipsModel):
         num_classes: int = 1000,
         w_max: float = 1.0,
         projection: Optional[str] = None,
+        bound_method: Optional[str] = None,
         layer_sizes: Optional[list[int]] = None,
         block_type: str = "basic",
         zero_init_residual: bool = False,
@@ -221,6 +262,7 @@ class LipsResNet(LipsModel):
         self.num_classes = num_classes
         self.w_max = w_max
         self.projection = projection
+        self.bound_method = bound_method
         self.layer_sizes = layer_sizes
         self.block_type = block_type
         self.total_residual_connections = sum(self.layer_sizes)
@@ -242,6 +284,7 @@ class LipsResNet(LipsModel):
             bias=False,
             w_max=w_max,
             projection=projection,
+            bound_method=bound_method,
         )
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=False)
@@ -280,6 +323,7 @@ class LipsResNet(LipsModel):
             num_classes,
             w_max=w_max,
             projection=projection,
+            bound_method=bound_method,
         )
 
         # Weight initialisation
@@ -316,7 +360,8 @@ class LipsResNet(LipsModel):
     def __str__(self):
         return (
             f"LipsResNet(num_classes={self.num_classes}, "
-            f"w_max={self.w_max}, projection={self.projection})"
+            f"w_max={self.w_max}, projection={self.projection}, "
+            f"bound_method={self.bound_method})"
         )
 
     def get_lips_bound(self):
@@ -357,6 +402,7 @@ class LipsResNet(LipsModel):
                     stride=stride,
                     w_max=self.w_max,
                     projection=self.projection,
+                    bound_method=self.bound_method,
                 ),
                 nn.BatchNorm2d(planes * block.expansion),
             )
@@ -370,6 +416,7 @@ class LipsResNet(LipsModel):
                 downsample=downsample,
                 w_max=self.w_max,
                 projection=self.projection,
+                bound_method=self.bound_method,
                 total_residual_connections=total_residual_connections,
             )
         )
@@ -383,6 +430,7 @@ class LipsResNet(LipsModel):
                     last_block=is_last,
                     w_max=self.w_max,
                     projection=self.projection,
+                    bound_method=self.bound_method,
                     total_residual_connections=total_residual_connections,
                 )
             )

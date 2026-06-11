@@ -1,3 +1,4 @@
+from .bound_methods import BOUND_METHODS
 from .LipsLayers import LipsConv2d, LipsLinear
 from .custom_modules import FakeReLU, FakeReLUM, SequentialWithArgs
 from .rms_bounds import (
@@ -9,6 +10,7 @@ from .rms_bounds import (
 )
 
 __all__ = [
+    "BOUND_METHODS",
     "LipsConv2d",
     "LipsLinear",
     "FakeReLU",
