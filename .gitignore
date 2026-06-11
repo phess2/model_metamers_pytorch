@@ -9,6 +9,7 @@ pytorch_checkpoints
 
 wandb/
 experiments/
+configs/nightly/generated/
 
 .cursorignore
 .cursor/

@@ -2,6 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .bound_methods import BOUND_METHODS, get_projection_fn, resolve_bound_method
+from .norm_ops import orthogonalize as _orthogonalize
+from .norm_ops import power_iterate as _power_iterate
+from .norm_ops import spectral_normalize as _spectral_normalize
+
 
 # def batch_project(M, project_fn):
 #     """
@@ -12,31 +17,6 @@ import torch.nn.functional as F
 #     M_flattened = M.reshape((-1,) + m_shape)
 #     M_projected = project_fn(M_flattened)
 #     return M_projected.reshape(M.shape) / len(M_flattened)
-
-
-def _orthogonalize(matrix, **kwargs):
-    """
-    Orthogonalize a single matrix, always bfloat16. Credit for coefficients to @YouJiacheng and @leloykun.
-    """
-    abc_list = [
-        (3955 / 1024, -8306 / 1024, 5008 / 1024),
-        (3735 / 1024, -6681 / 1024, 3463 / 1024),
-        (3799 / 1024, -6499 / 1024, 3211 / 1024),
-        (4019 / 1024, -6385 / 1024, 2906 / 1024),
-        (2677 / 1024, -3029 / 1024, 1162 / 1024),
-        (2172 / 1024, -1833 / 1024, 682 / 1024),
-    ]
-    transpose = matrix.shape[1] > matrix.shape[0]
-    if transpose:
-        matrix = matrix.T
-    matrix = matrix / (matrix.norm() + 1e-12)
-    for a, b, c in abc_list:
-        A = matrix.T @ matrix
-        identity_matrix = torch.eye(A.shape[0], dtype=matrix.dtype)
-        matrix = matrix @ (a * identity_matrix + b * A + c * A @ A)
-    if transpose:
-        matrix = matrix.T
-    return matrix
 
 
 def _soft_cap(matrix, alpha):
@@ -55,44 +35,6 @@ def _soft_cap(matrix, alpha):
     if transpose:
         matrix = matrix.T
     return matrix
-
-
-def _power_iterate(matrix, num_iters=16):
-    """
-    Power iterate to find the largest singular value and vectors of a matrix
-    """
-    m, n = matrix.shape
-    device = matrix.device
-    dtype = matrix.dtype
-    if m < n:
-        u = torch.randn((m,), device=device, dtype=dtype)
-        u = u / (u.norm() + 1e-12)
-        for _ in range(num_iters):
-            w = matrix @ (matrix.T @ u)
-            u = w / (w.norm() + 1e-12)
-        MTu = matrix.T @ u
-        sigma = MTu.norm()
-        v = MTu / (sigma + 1e-12)
-    else:
-        v = torch.randn((n,), device=device, dtype=dtype)
-        v = v / (v.norm() + 1e-12)
-        for _ in range(num_iters):
-            w = matrix.T @ (matrix @ v)
-            v = w / (w.norm() + 1e-12)
-        matrix_v = matrix @ v
-        sigma = matrix_v.norm()
-        u = matrix_v / (sigma + 1e-12)
-    return u, sigma, v
-
-
-def _spectral_normalize(matrix):
-    """
-    Normalize the singular values of M to 1
-    Adapted from lipschitz transformers code
-    """
-    _, sigma_max, _ = _power_iterate(matrix)
-    sigma_clamped = torch.clamp(sigma_max, min=1.0)
-    return matrix / sigma_clamped
 
 
 def soft_cap_coupling(w_max, wd, max_update_norm):
@@ -141,7 +83,13 @@ def _no_projection(projection, w_max):
 
 class LipsLinear(nn.Module):
     def __init__(
-        self, in_features, out_features, bias=False, w_max=1.0, projection=None
+        self,
+        in_features,
+        out_features,
+        bias=False,
+        w_max=1.0,
+        projection=None,
+        bound_method=None,
     ):
         super().__init__()
         self.in_features = in_features
@@ -150,8 +98,11 @@ class LipsLinear(nn.Module):
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         self.bias = nn.Parameter(torch.zeros(out_features)) if bias else None
         self.projection = (
-            projection  # None | 'orthogonalize' | 'spectral_normalize' | callable
+            projection
+            # None | 'orthogonalize' | 'spectral_normalize' | 'modular_linf_cap' | callable
         )
+        self.bound_method_name = resolve_bound_method(bound_method, projection)
+        self._bound_method = BOUND_METHODS[self.bound_method_name]
         if _no_projection(projection, w_max):
             # Keep sqrt(out/in) for RMS -> RMS norm consistency; no w_max scaling
             self.scale = torch.sqrt(torch.tensor(self.out_features / self.in_features))
@@ -190,18 +141,25 @@ class LipsLinear(nn.Module):
         # Cache weight before projection
         W_before = self.weight.data.clone()
 
-        unscaled_weight = self.weight.data / self.scale
         if isinstance(self.projection, str):
-            if self.projection == "orthogonalize":
-                W = _orthogonalize(unscaled_weight)
-            elif self.projection == "spectral_normalize":
-                W = _spectral_normalize(unscaled_weight)
+            if self.projection in ("orthogonalize", "spectral_normalize"):
+                unscaled_weight = self.weight.data / self.scale
+                if self.projection == "orthogonalize":
+                    W = _orthogonalize(unscaled_weight)
+                else:
+                    W = _spectral_normalize(unscaled_weight)
+                W = W * self.scale
+                self.weight.copy_(W)
+            elif self.projection in ("modular_linf_cap", "linf_cap"):
+                project_fn = get_projection_fn(self.projection)
+                self.weight.copy_(
+                    project_fn(self.weight.data, self.scale, self.w_max)
+                )
             else:
                 return 0.0
         else:
-            W = self.projection(unscaled_weight)
-        W = W * self.scale
-        self.weight.copy_(W)
+            W = self.projection(self.weight.data / self.scale) * self.scale
+            self.weight.copy_(W)
 
         # Compute norm-change ratio: (||ΔW||_F / lips_weight_scale) / w_max
         delta = self.weight.data - W_before
@@ -211,14 +169,10 @@ class LipsLinear(nn.Module):
         return ratio
 
     def get_lips_bound(self):
-        """
-        Gets the Lipschitz bound of the linear layer
-        """
-        W = self.weight.data
-        W = W / self.lips_weight_scale
-        _, sigma_max, _ = _power_iterate(W)
-        # || W ||*
-        return sigma_max
+        """Gets the Lipschitz bound of the linear layer."""
+        return self._bound_method.linear_bound(
+            self.weight.data, self.lips_weight_scale
+        )
 
 
 # class LipsHannPooling2d(nn.Module):
@@ -267,6 +221,7 @@ class LipsConv2d(nn.Module):
         groups=1,
         bias=True,
         projection=None,
+        bound_method=None,
     ):
         super().__init__()
         if isinstance(kernel_size, int):
@@ -288,8 +243,11 @@ class LipsConv2d(nn.Module):
         )
         self.bias = nn.Parameter(torch.zeros(out_channels)) if bias else None
         self.projection = (
-            projection  # None | 'orthogonalize' | 'spectral_normalize' | callable
+            projection
+            # None | 'orthogonalize' | 'spectral_normalize' | 'modular_linf_cap' | callable
         )
+        self.bound_method_name = resolve_bound_method(bound_method, projection)
+        self._bound_method = BOUND_METHODS[self.bound_method_name]
         if _no_projection(projection, w_max):
             # Keep sqrt(out/in) / (kh*kw) for RMS -> RMS norm consistency; no w_max scaling
             self.scale = torch.sqrt(torch.tensor(self.out_channels / self.in_channels))
@@ -341,7 +299,7 @@ class LipsConv2d(nn.Module):
 
         if isinstance(self.projection, str):
             W = self.weight
-            oc, icg, kh, kw = W.shape
+            _, _, kh, kw = W.shape
             if self.projection == "orthogonalize":
                 for i in range(kh):
                     for j in range(kw):
@@ -352,11 +310,15 @@ class LipsConv2d(nn.Module):
                     for j in range(kw):
                         slice_ij = W[:, :, i, j] / self.scale
                         W[:, :, i, j] = _spectral_normalize(slice_ij) * self.scale
+            elif self.projection in ("modular_linf_cap", "linf_cap"):
+                project_fn = get_projection_fn(self.projection)
+                for i in range(kh):
+                    for j in range(kw):
+                        W[:, :, i, j] = project_fn(W[:, :, i, j], self.scale, self.w_max)
             else:
                 return 0.0
         else:
-            W = self.projection(self.weight)
-            self.weight.copy_(W)
+            self.weight.copy_(self.projection(self.weight))
 
         # Compute norm-change ratio: (||ΔW||_F / lips_weight_scale) / w_max
         delta = self.weight.data - W_before
@@ -366,18 +328,7 @@ class LipsConv2d(nn.Module):
         return ratio
 
     def get_lips_bound(self):
-        """
-        Gets the Lipschitz bound of the convolutional layer
-        """
-        # getting the RMS -> RMS operator norm
-        W = self.weight.data
-        oc, icg, kh, kw = W.shape
-        max_val = float("-inf")
-        for i in range(kh):
-            for j in range(kw):
-                slice_ij = W[:, :, i, j]
-                slice_ij = slice_ij / self.lips_weight_scale
-                _, sigma_max, _ = _power_iterate(slice_ij)
-                max_val = max(max_val, sigma_max)
-        # max ||C..ij||*
-        return max_val
+        """Gets the Lipschitz bound of the convolutional layer."""
+        return self._bound_method.conv_bound(
+            self.weight.data, self.lips_weight_scale
+        )
