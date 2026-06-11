@@ -7,22 +7,22 @@ walkthrough.
 from . import attacker, datasets
 from .tools import helpers
 
-BY_DATASET = 'varies by dataset'
-REQ = 'REQUIRED'
+BY_DATASET = "varies by dataset"
+REQ = "REQUIRED"
 
 TRAINING_DEFAULTS = {
     datasets.ImageNet: {
         "epochs": 200,
-        "batch_size":256,
-        "weight_decay":1e-4,
-        "step_lr": 50
+        "batch_size": 256,
+        "weight_decay": 1e-4,
+        "step_lr": 50,
     },
     datasets.jsinV3: {
-       "epochs": 6, # Each "epoch" is 25 passes through the speech dataset
-       "batch_size":64,
-       "weight_decay": 1e-4,
-       "step_lr": 2 # Note: this is 50 pases through the speech dataset due to the structure of the hdf5 files
-    }
+        "epochs": 6,  # Each "epoch" is 25 passes through the speech dataset
+        "batch_size": 64,
+        "weight_decay": 1e-4,
+        "step_lr": 2,  # Note: this is 50 pases through the speech dataset due to the structure of the hdf5 files
+    },
 }
 """
 Default hyperparameters for training by dataset (tested for resnet50).
@@ -30,18 +30,23 @@ Parameters can be accessed as `TRAINING_DEFAULTS[dataset_class][param_name]`
 """
 
 TRAINING_ARGS = [
-    ['out-dir', str, 'where to save training logs and checkpoints', REQ],
-    ['epochs', int, 'number of epochs to train for', BY_DATASET],
-    ['lr', float, 'initial learning rate for training', 0.1],
-    ['weight_decay', float, 'SGD weight decay parameter', BY_DATASET],
-    ['momentum', float, 'SGD momentum parameter', 0.9],
-    ['step-lr', int, 'number of steps between 10x LR drops', BY_DATASET],
-    ['custom-schedule', str, 'LR sched (format: [(epoch, LR),...])', None],
-    ['adv-train', [0, 1], 'whether to train adversarially', REQ],
-    ['adv-eval', [0, 1], 'whether to adversarially evaluate', None], 
-    ['log-iters', int, 'how frequently (in epochs) to log', 5],
-    ['save-ckpt-iters', int, 'how frequently (epochs) to save \
-            (-1 for none, only saves best and last)', -1]
+    ["out-dir", str, "where to save training logs and checkpoints", REQ],
+    ["epochs", int, "number of epochs to train for", BY_DATASET],
+    ["lr", float, "initial learning rate for training", 0.1],
+    ["weight_decay", float, "SGD weight decay parameter", BY_DATASET],
+    ["momentum", float, "SGD momentum parameter", 0.9],
+    ["step-lr", int, "number of steps between 10x LR drops", BY_DATASET],
+    ["custom-schedule", str, "LR sched (format: [(epoch, LR),...])", None],
+    ["adv-train", [0, 1], "whether to train adversarially", REQ],
+    ["adv-eval", [0, 1], "whether to adversarially evaluate", None],
+    ["log-iters", int, "how frequently (in epochs) to log", 5],
+    [
+        "save-ckpt-iters",
+        int,
+        "how frequently (epochs) to save \
+            (-1 for none, only saves best and last)",
+        -1,
+    ],
 ]
 """
 Arguments essential for the `train_model` function.
@@ -51,14 +56,14 @@ BY_DATASET=looked up in TRAINING_DEFAULTS at runtime)]`
 """
 
 PGD_ARGS = [
-    ['attack-steps', int, 'number of steps for PGD attack', 7],
-    ['constraint', list(attacker.STEPS.keys()), 'adv constraint', REQ],
-    ['eps', str , 'adversarial perturbation budget', REQ],
-    ['attack-lr', str, 'step size for PGD', REQ],
-    ['use-best', [0, 1], 'if 1 (0) use best (final) PGD step as example', 1],
-    ['random-restarts', int, 'number of random PGD restarts for eval', 0],
-    ['random-start', [0, 1], 'start with random noise instead of pgd step', 0],
-    ['eps-fadein-epochs', int, 'fade in eps over this many iterations', 0],
+    ["attack-steps", int, "number of steps for PGD attack", 7],
+    ["constraint", list(attacker.STEPS.keys()), "adv constraint", REQ],
+    ["eps", str, "adversarial perturbation budget", REQ],
+    ["attack-lr", str, "step size for PGD", REQ],
+    ["use-best", [0, 1], "if 1 (0) use best (final) PGD step as example", 1],
+    ["random-restarts", int, "number of random PGD restarts for eval", 0],
+    ["random-start", [0, 1], "start with random noise instead of pgd step", 0],
+    ["eps-fadein-epochs", int, "fade in eps over this many iterations", 0],
 ]
 """
 Arguments essential for the :meth:`robustness.train.train_model` function if
@@ -69,13 +74,13 @@ BY_DATASET=looked up in TRAINING_DEFAULTS at runtime)]`
 """
 
 MODEL_LOADER_ARGS = [
-    ['dataset', list(datasets.DATASETS.keys()), '', REQ],
-    ['data', str, 'path to the dataset', '/tmp/'],
-    ['arch', str, 'architecture (see {cifar,imagenet}_models/', REQ],
-    ['batch-size', int, 'batch size for data loading', BY_DATASET],
-    ['workers', int, '# data loading workers', 30],
-    ['resume', str, 'path to checkpoint to resume from', None],
-    ['data-aug', [0, 1], 'whether to use data augmentation', 1],
+    ["dataset", list(datasets.DATASETS.keys()), "", REQ],
+    ["data", str, "path to the dataset", "/tmp/"],
+    ["arch", str, "architecture (see {cifar,imagenet}_models/", REQ],
+    ["batch-size", int, "batch size for data loading", BY_DATASET],
+    ["workers", int, "# data loading workers", 30],
+    ["resume", str, "path to checkpoint to resume from", None],
+    ["data-aug", [0, 1], "whether to use data augmentation", 1],
 ]
 """
 Arguments essential for constructing the model and dataloaders that will be fed
@@ -86,9 +91,9 @@ BY_DATASET=looked up in TRAINING_DEFAULTS at runtime)]`
 """
 
 CONFIG_ARGS = [
-    ['config-path', str, 'config path for loading in parameters', None],
-    ['eval-only', [0, 1], 'just run evaluation (no training)', 0],
-    ['exp-name', str, 'where to save in (inside out_dir)', None]
+    ["config-path", str, "config path for loading in parameters", None],
+    ["eval-only", [0, 1], "just run evaluation (no training)", 0],
+    ["exp-name", str, "where to save in (inside out_dir)", None],
 ]
 """
 Arguments for main.py specifically
@@ -96,6 +101,7 @@ Arguments for main.py specifically
 *Format*: `[NAME, TYPE/CHOICES, HELP STRING, DEFAULT (REQ=required,
 BY_DATASET=looked up in TRAINING_DEFAULTS at runtime)]`
 """
+
 
 def add_args_to_parser(arg_list, parser):
     """
@@ -113,14 +119,16 @@ def add_args_to_parser(arg_list, parser):
         The original parser, now with the arguments added in.
     """
     for arg_name, arg_type, arg_help, arg_default in arg_list:
-        has_choices = (type(arg_type) == list) 
+        has_choices = type(arg_type) == list
         kwargs = {
-            'type': type(arg_type[0]) if has_choices else arg_type,
-            'help': f"{arg_help} (default: {arg_default})"
+            "type": type(arg_type[0]) if has_choices else arg_type,
+            "help": f"{arg_help} (default: {arg_default})",
         }
-        if has_choices: kwargs['choices'] = arg_type
-        parser.add_argument(f'--{arg_name}', **kwargs)
+        if has_choices:
+            kwargs["choices"] = arg_type
+        parser.add_argument(f"--{arg_name}", **kwargs)
     return parser
+
 
 def check_and_fill_args(args, arg_list, ds_class):
     """
@@ -140,13 +148,12 @@ def check_and_fill_args(args, arg_list, ds_class):
     """
     for arg_name, _, _, arg_default in arg_list:
         name = arg_name.replace("-", "_")
-        if helpers.has_attr(args, name): continue
-        if arg_default == REQ: raise ValueError(f"{arg_name} required")
+        if helpers.has_attr(args, name):
+            continue
+        if arg_default == REQ:
+            raise ValueError(f"{arg_name} required")
         elif arg_default == BY_DATASET:
             setattr(args, name, TRAINING_DEFAULTS[ds_class][name])
-        elif arg_default is not None: 
+        elif arg_default is not None:
             setattr(args, name, arg_default)
     return args
-
-
-

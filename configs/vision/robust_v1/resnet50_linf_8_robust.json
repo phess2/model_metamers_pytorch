@@ -1,0 +1,12 @@
+{
+    "model_name": "robustresnet50",
+    "checkpoint_format": "robustness",
+    "metamer_normalization": "identity",
+    "hparams": {
+        "variant": "resnet50_linf_8_robust"
+    },
+    "data_settings": {
+        "image_size": 224,
+        "batch_size": 256
+    }
+}

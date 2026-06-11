@@ -3,7 +3,7 @@
 ignored.**
 
 This module houses the :class:`robustness.attacker.Attacker` and
-:class:`robustness.attacker.AttackerModel` classes. 
+:class:`robustness.attacker.AttackerModel` classes.
 
 :class:`~robustness.attacker.Attacker` is an internal class that should not be
 imported/called from outside the library.
@@ -27,24 +27,26 @@ called directly---instead, these arguments are passed along from
 :meth:`robustness.attacker.AttackerModel.forward`.
 """
 
-import torch as ch
-import dill
 import os
+
+import torch as ch
+
 if int(os.environ.get("NOTEBOOK_MODE", 0)) == 1:
     from tqdm import tqdm_notebook as tqdm
 else:
     from tqdm import tqdm
 
-from .tools import helpers
 from . import attack_steps
+from .tools import helpers
 
 STEPS = {
-    'inf': attack_steps.LinfStep,
-    '2': attack_steps.L2Step,
-    'unconstrained': attack_steps.UnconstrainedStep,
-    'inf_corner': attack_steps.LinfCornersStep,
-    'l2_enforcenorm': attack_steps.L2StepNormEnforced,
+    "inf": attack_steps.LinfStep,
+    "2": attack_steps.L2Step,
+    "unconstrained": attack_steps.UnconstrainedStep,
+    "inf_corner": attack_steps.LinfCornersStep,
+    "l2_enforcenorm": attack_steps.L2StepNormEnforced,
 }
+
 
 class Attacker(ch.nn.Module):
     """
@@ -57,13 +59,14 @@ class Attacker(ch.nn.Module):
     However, the :meth:`robustness.Attacker.forward` function below
     documents the arguments supported for adversarial attacks specifically.
     """
+
     def __init__(self, model, dataset):
         """
         Initialize the Attacker
 
         Args:
             nn.Module model : the PyTorch model to attack
-            Dataset dataset : dataset the model is trained on, only used to get 
+            Dataset dataset : dataset the model is trained on, only used to get
                 mean and std for normalization, and min and max for clipping
         """
         super(Attacker, self).__init__()
@@ -72,10 +75,27 @@ class Attacker(ch.nn.Module):
         self.dataset_min_value = dataset.min_value
         self.dataset_max_value = dataset.max_value
 
-    def forward(self, x, target, *_, constraint, eps, step_size, iterations,
-                random_start=False, random_restarts=False, do_tqdm=False,
-                targeted=False, custom_loss=None, should_preproc=True,
-                orig_input=None, use_best=True, return_image=True, est_grad=None):
+    def forward(
+        self,
+        x,
+        target,
+        *_,
+        constraint,
+        eps,
+        step_size,
+        iterations,
+        random_start=False,
+        random_restarts=False,
+        do_tqdm=False,
+        targeted=False,
+        custom_loss=None,
+        should_preproc=True,
+        orig_input=None,
+        use_best=True,
+        return_image=True,
+        est_grad=None,
+        optimizer="sgd",
+    ):
         """
         Implementation of forward (finds adversarial examples). Note that
         this does **not** perform inference and should not be called
@@ -120,6 +140,9 @@ class Attacker(ch.nn.Module):
                 :math:`\\nabla_x f(x) \\approx \\sum_{i=0}^N f(x + R\\cdot
                 \\vec{\\delta_i})\\cdot \\vec{\\delta_i}`, where
                 :math:`\delta_i` are randomly sampled from the unit ball.
+            optimizer (str) : optimizer to use for the attack. Options are:
+                - "sgd" (default): Uses SGD with L2 norm constraints (original implementation)
+                - "muon": Uses the Muon optimizer for potentially better convergence
         Returns:
             An adversarial example for x (i.e. within a feasible set
             determined by `eps` and `constraint`, but classified as:
@@ -134,23 +157,29 @@ class Attacker(ch.nn.Module):
 
         # Can provide a different input to make the feasible set around
         # instead of the initial point
-        if orig_input is None: orig_input = x.detach()
+        if orig_input is None:
+            orig_input = x.detach()
         orig_input = orig_input.cuda()
 
         # Multiplier for gradient ascent [untargeted] or descent [targeted]
         m = -1 if targeted else 1
 
         # Initialize step class and attacker criterion
-        criterion = ch.nn.CrossEntropyLoss(reduction='none').cuda()
+        criterion = ch.nn.CrossEntropyLoss(reduction="none").cuda()
         step_class = STEPS[constraint] if isinstance(constraint, str) else constraint
-        step = step_class(eps=eps, orig_input=orig_input, step_size=step_size,
-                          min_value=self.dataset_min_value, max_value=self.dataset_max_value) 
+        step = step_class(
+            eps=eps,
+            orig_input=orig_input,
+            step_size=step_size,
+            min_value=self.dataset_min_value,
+            max_value=self.dataset_max_value,
+        )
 
         def calc_loss(inp, target):
-            '''
+            """
             Calculates the loss of an input with respect to target labels
             Uses custom loss (if provided) otherwise the criterion
-            '''
+            """
             if should_preproc:
                 inp = self.preproc(inp)
             output = self.model(inp)
@@ -160,13 +189,14 @@ class Attacker(ch.nn.Module):
             return criterion(output, target), output
 
         # Main function for making adversarial examples
-        def get_adv_examples(x):
+        def get_adv_examples(x, optimizer_type=optimizer):
             # Random start (to escape certain types of gradient masking)
             if random_start:
                 x = step.random_perturb(x)
 
             iterator = range(iterations)
-            if do_tqdm: iterator = tqdm(iterator)
+            if do_tqdm:
+                iterator = tqdm(iterator)
 
             # Keep track of the "best" (worst-case) loss and its
             # corresponding input
@@ -185,18 +215,30 @@ class Attacker(ch.nn.Module):
 
                 return bloss, bx
 
+            # Initialize optimizer if using Muon
+            if optimizer_type.lower() == "muon":
+                # Import Muon optimizer here to avoid dependency issues
+                try:
+                    from muon import Muon
+
+                    muon_optimizer = Muon([x], lr=step_size)
+                except ImportError:
+                    print("Warning: Muon optimizer not found, falling back to SGD")
+                    optimizer_type = "sgd"
+
             # PGD iterates
             for _ in iterator:
                 x = x.clone().detach().requires_grad_(True)
                 losses, out = calc_loss(step.to_image(x), target)
-                assert losses.shape[0] == x.shape[0], \
-                        'Shape of losses must match input!'
+                assert losses.shape[0] == x.shape[0], (
+                    "Shape of losses must match input!"
+                )
 
                 loss = ch.mean(losses)
 
                 if step.use_grad:
                     if est_grad is None:
-                        grad, = ch.autograd.grad(m * loss, [x])
+                        (grad,) = ch.autograd.grad(m * loss, [x])
                     else:
                         f = lambda _x, _y: m * calc_loss(step.to_image(_x), _y)[0]
                         grad = helpers.calc_est_grad(f, x, target, *est_grad)
@@ -207,12 +249,22 @@ class Attacker(ch.nn.Module):
                     args = [losses, best_loss, x, best_x]
                     best_loss, best_x = replace_best(*args) if use_best else (losses, x)
 
-                    x = step.step(x, grad)
-                    x = step.project(x)
-                    if do_tqdm: iterator.set_description("Current loss: {l}".format(l=loss))
+                    if optimizer_type.lower() == "muon":
+                        # Use Muon optimizer
+                        muon_optimizer.zero_grad()
+                        x.grad = grad
+                        muon_optimizer.step()
+                        x = step.project(x)
+                    else:
+                        # Use default SGD step
+                        x = step.step(x, grad)
+                        x = step.project(x)
+
+                    if do_tqdm:
+                        iterator.set_description("Current loss: {l}".format(l=loss))
 
             # Save computation (don't compute last loss) if not use_best
-            if not use_best: 
+            if not use_best:
                 ret = x.clone().detach()
                 return step.to_image(ret) if return_image else ret
 
@@ -234,7 +286,7 @@ class Attacker(ch.nn.Module):
                     to_ret = adv.detach()
 
                 _, output = calc_loss(adv, target)
-                corr, = helpers.accuracy(output, target, topk=(1,), exact=True)
+                (corr,) = helpers.accuracy(output, target, topk=(1,), exact=True)
                 corr = corr.byte()
                 misclass = ~corr
                 to_ret[misclass] = adv[misclass]
@@ -244,6 +296,7 @@ class Attacker(ch.nn.Module):
             adv_ret = get_adv_examples(x)
 
         return adv_ret
+
 
 class AttackerModel(ch.nn.Module):
     """
@@ -263,27 +316,39 @@ class AttackerModel(ch.nn.Module):
     For a more comprehensive overview of this class, see `our detailed
     walkthrough <../example_usage/input_space_manipulation>`_
     """
+
     def __init__(self, model, dataset):
         super(AttackerModel, self).__init__()
-        if helpers.has_attr(dataset, 'vone_input_preproc'):
-            # Include VONeBlock outside of Attacker.Turn off preproc for Attacker. 
-            print('Running VONE BLOCK PREPROC')
-            self.vone_transform = ch.nn.Sequential(helpers.GraphPreprocessing(dataset), dataset.vone_input_preproc)
+        if helpers.has_attr(dataset, "vone_input_preproc"):
+            # Include VONeBlock outside of Attacker.Turn off preproc for Attacker.
+            print("Running VONE BLOCK PREPROC")
+            self.vone_transform = ch.nn.Sequential(
+                helpers.GraphPreprocessing(dataset), dataset.vone_input_preproc
+            )
             self.preproc = ch.nn.Identity()
         else:
             self.preproc = helpers.GraphPreprocessing(dataset)
         self.model = model
         self.attacker = Attacker(model, dataset)
-        if helpers.has_attr(dataset, 'vone_input_preproc'):
+        if helpers.has_attr(dataset, "vone_input_preproc"):
             self.attacker.preproc = ch.nn.Identity()
-        # If we have parts of the model that we want to run on the GPu, but do not 
+        # If we have parts of the model that we want to run on the GPu, but do not
         # want to include in the adversarial example generation
-        if helpers.has_attr(dataset, 'audio_rep_transform'):
+        if helpers.has_attr(dataset, "audio_rep_transform"):
             self.audio_rep_transform = dataset.audio_rep_transform
 
-
-    def forward(self, inp, target=None, make_adv=False, with_latent=False,
-                fake_relu=False, no_relu=False, with_image=True, **attacker_kwargs):
+    def forward(
+        self,
+        inp,
+        target=None,
+        make_adv=False,
+        with_latent=False,
+        fake_relu=False,
+        no_relu=False,
+        with_image=True,
+        optimizer="sgd",
+        **attacker_kwargs,
+    ):
         """
         Main function for running inference and generating adversarial
         examples for a model.
@@ -312,20 +377,23 @@ class AttackerModel(ch.nn.Module):
                 visible effect without :samp:`with_latent=True`.
             with_image (bool) : if :samp:`False`, only return the model output
                 (even if :samp:`make_adv == True`).
+            optimizer (str) : optimizer to use for the attack. Options are:
+                - "sgd" (default): Uses SGD with L2 norm constraints (original implementation)
+                - "muon": Uses the Muon optimizer for potentially better convergence
 
         """
-        # Useful for running part of the model first, before generating the 
+        # Useful for running part of the model first, before generating the
         # adverarial examples for the rest of the model
-        if helpers.has_attr(self, 'audio_rep_transform'):
+        if helpers.has_attr(self, "audio_rep_transform"):
             inp, _ = self.audio_rep_transform(inp, None)
-        if helpers.has_attr(self, 'vone_transform'): 
+        if helpers.has_attr(self, "vone_transform"):
             inp = self.vone_transform(inp)
-      
+
         if make_adv:
             assert target is not None
             prev_training = bool(self.training)
             self.eval()
-            adv = self.attacker(inp, target, **attacker_kwargs)
+            adv = self.attacker(inp, target, optimizer=optimizer, **attacker_kwargs)
             if prev_training:
                 self.train()
 
@@ -335,13 +403,18 @@ class AttackerModel(ch.nn.Module):
             preproc_inp = self.preproc(inp)
 
             if no_relu and (not with_latent):
-                print("WARNING: 'no_relu' has no visible effect if 'with_latent is False.")
+                print(
+                    "WARNING: 'no_relu' has no visible effect if 'with_latent is False."
+                )
             if no_relu and fake_relu:
                 raise ValueError("Options 'no_relu' and 'fake_relu' are exclusive")
-            output = self.model(preproc_inp, with_latent=with_latent,
-                                    fake_relu=fake_relu, no_relu=no_relu)
+            output = self.model(
+                preproc_inp,
+                with_latent=with_latent,
+                fake_relu=fake_relu,
+                no_relu=no_relu,
+            )
         else:
             output = None
 
         return (output, inp)
-

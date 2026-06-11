@@ -55,32 +55,35 @@ References
          Mechanisms.” IEEE Trans Pattern Anal Mach Intell 29, no. 3 (2007):
          411–26.  https://doi.org/10.1109/TPAMI.2007.56.
 """
+
 import numpy as np
 from scipy.io import loadmat
 import torch
 from torch import nn
 import os
 
-__all__ = ['hmax_standard_with_readout']
+__all__ = ["hmax_standard_with_readout"]
 
 STABILITY_OFFSET = 1e-10
 
+
 class ClippedPower(torch.autograd.Function):
     """
-    Takes the power of a signal and clips its gradients to the 
+    Takes the power of a signal and clips its gradients to the
     provided values in the backwards pass
     """
+
     @staticmethod
     def forward(ctx, x, clip_value, power):
         ctx.save_for_backward(x)
         ctx.clip_value = clip_value
         ctx.power = power
         return torch.pow(x, power)
- 
+
     @staticmethod
     def backward(ctx, grad_output):
-        x, = ctx.saved_tensors
-        g = ctx.power * torch.pow(x, ctx.power-1)
+        (x,) = ctx.saved_tensors
+        g = ctx.power * torch.pow(x, ctx.power - 1)
         return grad_output * torch.clamp(g, -ctx.clip_value, ctx.clip_value), None, None
 
 
@@ -105,7 +108,7 @@ def gabor_filter(size, wavelength, orientation):
     filt : ndarray, shape (size, size)
         The filter weights.
     """
-    lambda_ = size * 2. / wavelength
+    lambda_ = size * 2.0 / wavelength
     sigma = lambda_ * 0.8
     gamma = 0.3  # spatial aspect ratio: 0.23 < gamma < 0.92
     theta = np.deg2rad(orientation + 90)
@@ -114,13 +117,13 @@ def gabor_filter(size, wavelength, orientation):
     x, y = np.mgrid[:size, :size] - (size // 2)
     rotx = x * np.cos(theta) + y * np.sin(theta)
     roty = -x * np.sin(theta) + y * np.cos(theta)
-    filt = np.exp(-(rotx**2 + gamma**2 * roty**2) / (2 * sigma ** 2))
+    filt = np.exp(-(rotx**2 + gamma**2 * roty**2) / (2 * sigma**2))
     filt *= np.cos(2 * np.pi * rotx / lambda_)
     filt[np.sqrt(x**2 + y**2) > (size / 2)] = 0
 
     # Normalize the filter
     filt = filt - np.mean(filt)
-    filt = filt / np.sqrt(np.sum(filt ** 2))
+    filt = filt / np.sqrt(np.sum(filt**2))
 
     return filt
 
@@ -148,20 +151,23 @@ class S1(nn.Module):
     orientations : list of float
         The orientations of the Gabor filters, in degrees.
     """
-    def __init__(self, size, wavelength, orientations=[90, -45, 0, 45],
-                 include_borders=True):
+
+    def __init__(
+        self, size, wavelength, orientations=[90, -45, 0, 45], include_borders=True
+    ):
         super().__init__()
         self.num_orientations = len(orientations)
         self.size = size
-        # Added by jfeather to better match matlab implementation of padding 
+        # Added by jfeather to better match matlab implementation of padding
         # (10/29/2021)
-        self.include_borders = include_borders 
+        self.include_borders = include_borders
 
         # Use PyTorch's Conv2d as a base object. Each "channel" will be an
-        # orientation. 'same' convolution is not standard in pytorch, so an 
+        # orientation. 'same' convolution is not standard in pytorch, so an
         # approximation is used.
-        self.gabor = nn.Conv2d(1, self.num_orientations, size,
-                               padding=size // 2, bias=False)
+        self.gabor = nn.Conv2d(
+            1, self.num_orientations, size, padding=size // 2, bias=False
+        )
 
         if not self.include_borders:
             self.remove_padding_amount = size // 2
@@ -170,7 +176,8 @@ class S1(nn.Module):
         # orientation
         for channel, orientation in enumerate(orientations):
             self.gabor.weight.data[channel, 0] = torch.Tensor(
-                gabor_filter(size, wavelength, orientation))
+                gabor_filter(size, wavelength, orientation)
+            )
 
         # A convolution layer filled with ones. This is used to normalize the
         # result in the forward method.
@@ -185,13 +192,15 @@ class S1(nn.Module):
         """Apply Gabor filters, take absolute value, and normalize."""
         s1_output = torch.abs(self.gabor(img))
         if not self.include_borders:
-            s1_output[:,:,0:self.remove_padding_amount,:] = 0
-            s1_output[:,:,:,0:self.remove_padding_amount] = 0
-            s1_output[:,:,-self.remove_padding_amount:,:] = 0
-            s1_output[:,:,:,-self.remove_padding_amount:] = 0
- 
+            s1_output[:, :, 0 : self.remove_padding_amount, :] = 0
+            s1_output[:, :, :, 0 : self.remove_padding_amount] = 0
+            s1_output[:, :, -self.remove_padding_amount :, :] = 0
+            s1_output[:, :, :, -self.remove_padding_amount :] = 0
+
         # relu added by jfeather on 09/29/2021 to avoid nans (boundaries can cause values < 0)
-        norm = torch.sqrt(torch.nn.functional.relu(self.uniform(img ** 2)) + STABILITY_OFFSET) 
+        norm = torch.sqrt(
+            torch.nn.functional.relu(self.uniform(img**2)) + STABILITY_OFFSET
+        )
         s1_output /= norm
         return s1_output
 
@@ -206,11 +215,11 @@ class C1(nn.Module):
     size : int
         Size of the MaxPool2d operation being performed by this C1 layer.
     """
+
     def __init__(self, size):
         super().__init__()
         self.size = size
-        self.local_pool = nn.MaxPool2d(size, stride=size // 2,
-                                       padding=size // 2)
+        self.local_pool = nn.MaxPool2d(size, stride=size // 2, padding=size // 2)
 
     def forward(self, s1_outputs):
         """Max over scales, followed by a MaxPool2d operation."""
@@ -253,7 +262,8 @@ class S2(nn.Module):
            National Academy of Sciences 104, no. 15 (April 10, 2007): 6424–29.
            https://doi.org/10.1073/pnas.0700622104.
     """
-    def __init__(self, patches, activation='gaussian', sigma=1):
+
+    def __init__(self, patches, activation="gaussian", sigma=1):
         super().__init__()
         self.activation = activation
         self.sigma = sigma
@@ -261,14 +271,17 @@ class S2(nn.Module):
         num_patches, num_orientations, size, _ = patches.shape
 
         # Main convolution layer
-        self.conv = nn.Conv2d(in_channels=num_orientations,
-                              out_channels=num_orientations * num_patches,
-                              kernel_size=size,
-                              padding=size // 2,
-                              groups=num_orientations,
-                              bias=False)
+        self.conv = nn.Conv2d(
+            in_channels=num_orientations,
+            out_channels=num_orientations * num_patches,
+            kernel_size=size,
+            padding=size // 2,
+            groups=num_orientations,
+            bias=False,
+        )
         self.conv.weight.data = torch.Tensor(
-            patches.transpose(1, 0, 2, 3).reshape(1600, 1, size, size))
+            patches.transpose(1, 0, 2, 3).reshape(1600, 1, size, size)
+        )
 
         # A convolution layer filled with ones. This is used for the distance
         # computation
@@ -277,7 +290,8 @@ class S2(nn.Module):
 
         # This is also used for the distance computation
         self.patches_sum_sq = nn.Parameter(
-            torch.Tensor((patches ** 2).sum(axis=(1, 2, 3))))
+            torch.Tensor((patches**2).sum(axis=(1, 2, 3)))
+        )
 
         self.num_patches = num_patches
         self.num_orientations = num_orientations
@@ -295,29 +309,33 @@ class S2(nn.Module):
             # Unstack the orientations
             conv_output_size = conv_output.shape[3]
             conv_output = conv_output.view(
-                -1, self.num_orientations, self.num_patches, conv_output_size,
-                conv_output_size)
+                -1,
+                self.num_orientations,
+                self.num_patches,
+                conv_output_size,
+                conv_output_size,
+            )
 
             # Pool over orientations
             conv_output = conv_output.sum(dim=1)
 
             # Compute distance
-            c1_sq = self.uniform(
-                torch.sum(c1_output ** 2, dim=1, keepdim=True))
+            c1_sq = self.uniform(torch.sum(c1_output**2, dim=1, keepdim=True))
             dist = c1_sq - 2 * conv_output
             dist += self.patches_sum_sq[None, :, None, None]
 
             # Apply activation function
-            if self.activation == 'gaussian':
-                dist = torch.exp(- 1 / (2 * self.sigma ** 2) * dist)
-            elif self.activation == 'euclidean':
+            if self.activation == "gaussian":
+                dist = torch.exp(-1 / (2 * self.sigma**2) * dist)
+            elif self.activation == "euclidean":
                 dist = torch.nn.functional.relu(dist)
                 dist = torch.sqrt(dist + STABILITY_OFFSET)
                 # negate the distance and then take the max value (matlab code takes the minimum)
                 dist = -dist
             else:
-                raise ValueError("activation parameter should be either "
-                                 "'gaussian' or 'euclidean'.")
+                raise ValueError(
+                    "activation parameter should be either 'gaussian' or 'euclidean'."
+                )
 
             s2_outputs.append(dist)
         return s2_outputs
@@ -325,16 +343,18 @@ class S2(nn.Module):
 
 class C2(nn.Module):
     """A layer of C2 units operating on a layer of S2 units."""
-    def __init__(self, S2_activation='gaussian'):
+
+    def __init__(self, S2_activation="gaussian"):
         super().__init__()
         # If S2 activation is "euclidean" then we need to negate the output
         self.S2_activation = S2_activation
+
     def forward(self, s2_outputs):
         """Take the maximum value of the underlying S2 units."""
         maxs = [s2.max(dim=3)[0] for s2 in s2_outputs]
         maxs = [m.max(dim=2)[0] for m in maxs]
         maxs = torch.cat([m[:, None, :] for m in maxs], 1)
-        if self.S2_activation=='euclidean':
+        if self.S2_activation == "euclidean":
             return -maxs.max(dim=1)[0]
         else:
             return maxs.max(dim=1)[0]
@@ -363,56 +383,71 @@ class HMAX(nn.Module):
     c2_output : list of Tensors, shape (batch_size, num_patches)
         For each scale, the output of the C2 units.
     """
-    def __init__(self, universal_patch_set, s2_act='gaussian', 
-                 linear_readout=False, num_classes=1000, 
-                 include_S1_borders=True):
+
+    def __init__(
+        self,
+        universal_patch_set,
+        s2_act="gaussian",
+        linear_readout=False,
+        num_classes=1000,
+        include_S1_borders=True,
+    ):
         super().__init__()
         self.linear_readout = linear_readout
         self.num_classes = num_classes
 
         # S1 layers, consisting of units with increasing size
-        self.s1_units = nn.ModuleList([
-            S1(size=7, wavelength=4, include_borders=include_S1_borders),
-            S1(size=9, wavelength=3.95, include_borders=include_S1_borders),
-            S1(size=11, wavelength=3.9, include_borders=include_S1_borders),
-            S1(size=13, wavelength=3.85, include_borders=include_S1_borders),
-            S1(size=15, wavelength=3.8, include_borders=include_S1_borders),
-            S1(size=17, wavelength=3.75, include_borders=include_S1_borders),
-            S1(size=19, wavelength=3.7, include_borders=include_S1_borders),
-            S1(size=21, wavelength=3.65, include_borders=include_S1_borders),
-            S1(size=23, wavelength=3.6, include_borders=include_S1_borders),
-            S1(size=25, wavelength=3.55, include_borders=include_S1_borders),
-            S1(size=27, wavelength=3.5, include_borders=include_S1_borders),
-            S1(size=29, wavelength=3.45, include_borders=include_S1_borders),
-            S1(size=31, wavelength=3.4, include_borders=include_S1_borders),
-            S1(size=33, wavelength=3.35, include_borders=include_S1_borders),
-            S1(size=35, wavelength=3.3, include_borders=include_S1_borders),
-            S1(size=37, wavelength=3.25, include_borders=include_S1_borders),
-        ])
+        self.s1_units = nn.ModuleList(
+            [
+                S1(size=7, wavelength=4, include_borders=include_S1_borders),
+                S1(size=9, wavelength=3.95, include_borders=include_S1_borders),
+                S1(size=11, wavelength=3.9, include_borders=include_S1_borders),
+                S1(size=13, wavelength=3.85, include_borders=include_S1_borders),
+                S1(size=15, wavelength=3.8, include_borders=include_S1_borders),
+                S1(size=17, wavelength=3.75, include_borders=include_S1_borders),
+                S1(size=19, wavelength=3.7, include_borders=include_S1_borders),
+                S1(size=21, wavelength=3.65, include_borders=include_S1_borders),
+                S1(size=23, wavelength=3.6, include_borders=include_S1_borders),
+                S1(size=25, wavelength=3.55, include_borders=include_S1_borders),
+                S1(size=27, wavelength=3.5, include_borders=include_S1_borders),
+                S1(size=29, wavelength=3.45, include_borders=include_S1_borders),
+                S1(size=31, wavelength=3.4, include_borders=include_S1_borders),
+                S1(size=33, wavelength=3.35, include_borders=include_S1_borders),
+                S1(size=35, wavelength=3.3, include_borders=include_S1_borders),
+                S1(size=37, wavelength=3.25, include_borders=include_S1_borders),
+            ]
+        )
 
         # Each C1 layer pools across two S1 layers
-        self.c1_units = nn.ModuleList([
-            C1(size=8),
-            C1(size=10),
-            C1(size=12),
-            C1(size=14),
-            C1(size=16),
-            C1(size=18),
-            C1(size=20),
-            C1(size=22),
-        ])
+        self.c1_units = nn.ModuleList(
+            [
+                C1(size=8),
+                C1(size=10),
+                C1(size=12),
+                C1(size=14),
+                C1(size=16),
+                C1(size=18),
+                C1(size=20),
+                C1(size=22),
+            ]
+        )
 
         # Read the universal patch set for the S2 layer
         m = loadmat(universal_patch_set)
-        patches = [patch.reshape(shape[[2, 1, 0, 3]]).transpose(3, 0, 2, 1)
-                   for patch, shape in zip(m['patches'][0], m['patchSizes'].T)]
+        patches = [
+            patch.reshape(shape[[2, 1, 0, 3]]).transpose(3, 0, 2, 1)
+            for patch, shape in zip(m["patches"][0], m["patchSizes"].T)
+        ]
 
         # One S2 layer for each patch scale, operating on all C1 layers
-        self.s2_units = nn.ModuleList([S2(patches=scale_patches, activation=s2_act)
-                         for scale_patches in patches])
+        self.s2_units = nn.ModuleList(
+            [S2(patches=scale_patches, activation=s2_act) for scale_patches in patches]
+        )
 
         # One C2 layer operating on each scale
-        self.c2_units = nn.ModuleList([C2(S2_activation=s2_act) for s2 in self.s2_units])
+        self.c2_units = nn.ModuleList(
+            [C2(S2_activation=s2_act) for s2 in self.s2_units]
+        )
 
         if linear_readout:
             self.flatten = nn.Flatten()
@@ -443,7 +478,7 @@ class HMAX(nn.Module):
         # Each C1 layer pools across two S1 layers
         c1_outputs = []
         for c1, i in zip(self.c1_units, range(0, len(self.s1_units), 2)):
-            c1_outputs.append(c1(s1_outputs[i:i+2]))
+            c1_outputs.append(c1(s1_outputs[i : i + 2]))
 
         s2_outputs = [s2(c1_outputs) for s2 in self.s2_units]
         c2_outputs = [c2(s2) for c2, s2 in zip(self.c2_units, s2_outputs)]
@@ -453,32 +488,37 @@ class HMAX(nn.Module):
     def forward(self, img, with_latent=False, fake_relu=False, no_relu=False):
         """Run through everything and concatenate the output of the C2s."""
         all_outputs = {}
-        all_outputs['input_after_preproc'] = img
-        all_outputs['preproc_image'] = img
+        all_outputs["input_after_preproc"] = img
+        all_outputs["preproc_image"] = img
         layers_out = self.get_all_layers_tensors(img)
         if with_latent:
             batch_size = layers_out[0][0].shape[0]
-            all_outputs['s1_out'] = torch.cat(layers_out[0], 1)
-            all_outputs['c1_out_no_reshape'] = layers_out[1]
-            all_outputs['c1_out'] = torch.cat([c[:, None, :].view(batch_size,-1) for c in layers_out[1]], 1)
-            all_outputs['s2_out_no_reshape'] = layers_out[2]
-            all_outputs['s2_out_reshape_to_list'] = [torch.cat([b.view(batch_size,-1) for b in a],1) for a in layers_out[2]]
-            all_outputs['s2_out'] = torch.cat([b.view(batch_size,-1) for c in layers_out[2] for b in c], 1)
+            all_outputs["s1_out"] = torch.cat(layers_out[0], 1)
+            all_outputs["c1_out_no_reshape"] = layers_out[1]
+            all_outputs["c1_out"] = torch.cat(
+                [c[:, None, :].view(batch_size, -1) for c in layers_out[1]], 1
+            )
+            all_outputs["s2_out_no_reshape"] = layers_out[2]
+            all_outputs["s2_out_reshape_to_list"] = [
+                torch.cat([b.view(batch_size, -1) for b in a], 1) for a in layers_out[2]
+            ]
+            all_outputs["s2_out"] = torch.cat(
+                [b.view(batch_size, -1) for c in layers_out[2] for b in c], 1
+            )
         c2_outputs = layers_out[-1]
-        all_outputs['c2_out_no_reshape'] = layers_out[-1]
-        c2_outputs = torch.cat(
-            [c2_out[:, None, :] for c2_out in c2_outputs], 1)
-        all_outputs['c2_out'] = c2_outputs
+        all_outputs["c2_out_no_reshape"] = layers_out[-1]
+        c2_outputs = torch.cat([c2_out[:, None, :] for c2_out in c2_outputs], 1)
+        all_outputs["c2_out"] = c2_outputs
 
         if self.linear_readout:
             flattened_out = self.flatten(c2_outputs)
             linear_out = self.fc(flattened_out)
-            all_outputs['final'] = linear_out
+            all_outputs["final"] = linear_out
             if with_latent:
                 return linear_out, c2_outputs, all_outputs
             return linear_out
         else:
-            all_outputs['final'] = all_outputs['c2_out']
+            all_outputs["final"] = all_outputs["c2_out"]
             if with_latent:
                 return c2_outputs, None, all_outputs
             return c2_outputs
@@ -534,31 +574,37 @@ class HMAX(nn.Module):
             [c2.cpu().detach().numpy() for c2 in c2_out],
         )
 
+
 def hmax_standard_with_readout(**kwargs):
     """Constructs the hmax vision model with a linear readout that can be trained
-    This way we can train a transfer head on top of the model and measure class accuracy 
-    on ImageNet. 
+    This way we can train a transfer head on top of the model and measure class accuracy
+    on ImageNet.
 
     Args:
-        pretrained (bool): 
+        pretrained (bool):
     """
-    if not os.path.isfile('hmax_universal_path_set.mat'):
+    if not os.path.isfile("hmax_universal_path_set.mat"):
         import urllib.request
-        patch_set_url = 'https://github.com/wmvanvliet/pytorch_hmax/raw/master/universal_patch_set.mat'
-        urllib.request.urlretrieve(patch_set_url, 'hmax_universal_path_set.mat')
 
-    saved_param = 'hmax_universal_path_set.mat'
+        patch_set_url = "https://github.com/wmvanvliet/pytorch_hmax/raw/master/universal_patch_set.mat"
+        urllib.request.urlretrieve(patch_set_url, "hmax_universal_path_set.mat")
 
-    model = HMAX(saved_param, linear_readout=True, num_classes=1000, 
-                 s2_act='gaussian', include_S1_borders=False)
+    saved_param = "hmax_universal_path_set.mat"
+
+    model = HMAX(
+        saved_param,
+        linear_readout=True,
+        num_classes=1000,
+        s2_act="gaussian",
+        include_S1_borders=False,
+    )
     for name, param in model.named_parameters():
-        if name in ['fc.bias', 'fc.weight']:
+        if name in ["fc.bias", "fc.weight"]:
             param.requires_grad = True
         else:
             param.requires_grad = False
 
     for name, param in model.named_parameters():
-        print('%s: %s'%(name, param.requires_grad))
- 
-    return model
+        print("%s: %s" % (name, param.requires_grad))
 
+    return model

@@ -1,0 +1,50 @@
+{
+    "model_name": "lipsresnet",
+    "hparams": {
+        "num_classes": 1000,
+        "w_max": 0.0,
+        "projection": null,
+        "max_epochs": 90,
+        "val_check_interval": 0.25,
+        "block_type": "basic",
+        "layer_sizes": [2, 2, 2, 2],
+        "zero_init_residual": false
+    },
+    "data_settings": {
+        "batch_size": 512,
+        "pin_memory": false
+    },
+    "optim_settings": {
+        "mult_optimizers": false,
+        "optimizer": {
+            "name": "SGD",
+            "kwargs": {
+                "lr": 0.2,
+                "momentum": 0.9,
+                "weight_decay": 0.0001
+            },
+            "lr_scheduler": {
+                "name": "SequentialLR",
+                "interval": "step",
+                "convert_epochs_to_steps": true,
+                "schedulers": [
+                    {
+                        "name": "LinearLR",
+                        "kwargs": {
+                            "start_factor": 1e-8,
+                            "total_iters": 5
+                        }
+                    },
+                    {
+                        "name": "CosineAnnealingLR",
+                        "kwargs": {
+                            "T_max": 85,
+                            "eta_min": 0
+                        }
+                    }
+                ],
+                "milestones": [5]
+            }
+        }
+    }
+}

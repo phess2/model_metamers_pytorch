@@ -1,10 +1,8 @@
 import torch as ch
-import numpy as np
 from torch import nn
 from robustness.audio_functions import audio_transforms
 from torch._jit_internal import _copy_to_script_wrapper
-import numpy as np
-from .layers.padding import pad_valid_time, pad_same
+
 
 class FakeReLU(ch.autograd.Function):
     @staticmethod
@@ -15,27 +13,31 @@ class FakeReLU(ch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output
 
+
 class FakeReLUM(nn.Module):
     def forward(self, x):
         return FakeReLU.apply(x)
+
 
 class SequentialWithArgs(ch.nn.Sequential):
     def forward(self, input, *args, **kwargs):
         vs = list(self._modules.values())
         l = len(vs)
         for i in range(l):
-            if i == l-1:
+            if i == l - 1:
                 input = vs[i](input, *args, **kwargs)
             else:
                 input = vs[i](input)
         return input
 
+
 class AudioInputRepresentation(ch.nn.Module):
-    '''
+    """
     A module (custom layer) for turning the audio signal into a
     representation for training, ie using a mel spectrogram or a
     cochleagram.
-    '''
+    """
+
     def __init__(self, rep_type, rep_kwargs, compression_type, compression_kwargs):
         super(AudioInputRepresentation, self).__init__()
         self.rep_type = rep_type
@@ -45,15 +47,15 @@ class AudioInputRepresentation(ch.nn.Module):
 
         # Functions for the representations are defined in the audio_transforms
         # library, but we only use the foreground audio here.
-        self.full_rep = audio_transforms.AudioToAudioRepresentation(rep_type,
-                                                                    rep_kwargs,
-                                                                    compression_type,
-                                                                    compression_kwargs)
+        self.full_rep = audio_transforms.AudioToAudioRepresentation(
+            rep_type, rep_kwargs, compression_type, compression_kwargs
+        )
 
     def forward(self, x, with_latent=False, fake_relu=False, no_relu=False):
         # print(self.full_rep)
         x, _ = self.full_rep(x, None)
         return x
+
 
 class SequentialAttacker(ch.nn.Module):
     r"""A sequential container with additional kwargs for attacker models.
@@ -94,7 +96,7 @@ class SequentialAttacker(ch.nn.Module):
         size = len(self)
         idx = operator.index(idx)
         if not -size <= idx < size:
-            raise IndexError('index {} is out of range'.format(idx))
+            raise IndexError("index {} is out of range".format(idx))
         idx %= size
         return next(islice(iterator, idx, None))
 
@@ -135,4 +137,3 @@ class SequentialAttacker(ch.nn.Module):
         for module in self:
             input = module(input, **kwargs)
         return input
-
