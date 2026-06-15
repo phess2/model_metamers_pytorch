@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import torch
@@ -38,6 +39,8 @@ remap_model_indices_to_audioset_labels = (
     _AUDIO_CLASSIFICATION.remap_model_indices_to_audioset_labels
 )
 summarize_multilabel_logits = _AUDIO_CLASSIFICATION.summarize_multilabel_logits
+load_audioset_label_names = _GENERATE_AUDIO_ADVERSARIALS._load_audioset_label_names
+resolve_single_label_targets = _GENERATE_AUDIO_ADVERSARIALS._resolve_single_label_targets
 
 
 class AudioClassificationTests(unittest.TestCase):
@@ -136,6 +139,36 @@ class AudioExampleLoadingTests(unittest.TestCase):
         self.assertEqual(sorted(selected.keys()), [0, 2])
         self.assertEqual(decode_audioset_labels(selected[0]), [1, 7])
         self.assertEqual(decode_audioset_labels(selected[2]), [4, 9])
+
+    def test_load_audioset_label_names_reads_display_name_csv(self):
+        with TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "class_labels_indices.csv"
+            csv_path.write_text(
+                "index,mid,display_name\n0,/m/09x0r,Speech\n2,/m/04rlf,Music\n",
+                encoding="utf-8",
+            )
+            names = load_audioset_label_names(str(csv_path))
+        self.assertEqual(names[0], "Speech")
+        self.assertEqual(names[2], "Music")
+
+    def test_resolve_single_label_targets_maps_each_label_individually(self):
+        def _fake_remap(*, true_labels, model_label_mids):
+            del model_label_mids
+            return [int(true_labels[0]) + 100]
+
+        targets = resolve_single_label_targets(
+            labels_list=[3, 7, 11],
+            model_label_mids=None,
+            remap_fn=_fake_remap,
+        )
+        self.assertEqual(
+            targets,
+            [
+                {"target_audioset_label": 3, "target_model_label": 103},
+                {"target_audioset_label": 7, "target_model_label": 107},
+                {"target_audioset_label": 11, "target_model_label": 111},
+            ],
+        )
 
 
 if __name__ == "__main__":
