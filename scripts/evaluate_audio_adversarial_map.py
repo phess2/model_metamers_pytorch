@@ -21,7 +21,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fallback path tes
 
 
 def _parse_epsilon_from_attack_id(attack_id: str) -> float:
-    token = attack_id.split("_eps_")[-1]
+    # Take only the leading numeric token after "_eps_" so trailing suffixes such
+    # as "_suppress" or "_single_label" do not break epsilon parsing/discovery.
+    token = attack_id.split("_eps_")[-1].split("_")[0]
     return float(token.replace("p", "."))
 
 
@@ -94,7 +96,9 @@ def compute_map_from_scores(
     Excludes classes with zero positives from the mean.
     """
     if scores.shape != targets.shape:
-        raise ValueError(f"scores/targets shape mismatch: {scores.shape} vs {targets.shape}")
+        raise ValueError(
+            f"scores/targets shape mismatch: {scores.shape} vs {targets.shape}"
+        )
     if scores.ndim != 2:
         raise ValueError(f"Expected 2D score matrix, got shape {scores.shape}")
 
@@ -208,7 +212,9 @@ def _iter_sweep_dirs(
         if wanted is not None and epsilon not in wanted:
             continue
         discovered.append((epsilon, path))
-    return [path for _, path in sorted(discovered, key=lambda pair: (pair[0], pair[1].name))]
+    return [
+        path for _, path in sorted(discovered, key=lambda pair: (pair[0], pair[1].name))
+    ]
 
 
 def _compute_monotonicity_violations(
@@ -238,9 +244,7 @@ def _compute_monotonicity_violations(
 def _attack_strength_sort_key(row: dict[str, Any]) -> tuple[float, float]:
     """Lower adversarial mAP is stronger; tie-break on higher adversarial loss."""
     mean_adv_loss = float(row["mean_adversarial_loss"])
-    loss_tiebreak = (
-        -mean_adv_loss if not math.isnan(mean_adv_loss) else float("inf")
-    )
+    loss_tiebreak = -mean_adv_loss if not math.isnan(mean_adv_loss) else float("inf")
     return float(row["adversarial_map"]), loss_tiebreak
 
 
@@ -295,7 +299,9 @@ def select_best_m_by_ranked_vote(
         multiplier_to_row = by_epsilon[epsilon]
         ranked_multipliers = sorted(
             multiplier_to_row.keys(),
-            key=lambda multiplier: _attack_strength_sort_key(multiplier_to_row[multiplier]),
+            key=lambda multiplier: _attack_strength_sort_key(
+                multiplier_to_row[multiplier]
+            ),
         )
         num_candidates = len(ranked_multipliers)
         epsilon_detail: dict[str, Any] = {
@@ -340,7 +346,10 @@ def select_best_m_by_ranked_vote(
         for multiplier in sorted(vote_totals.keys())
     ]
     vote_summary.sort(
-        key=lambda item: (-float(item["total_points"]), float(item["mean_adversarial_map"]))
+        key=lambda item: (
+            -float(item["total_points"]),
+            float(item["mean_adversarial_map"]),
+        )
     )
     return {
         "method": "borda_ranked_vote_per_epsilon",
@@ -373,12 +382,16 @@ def _plot_sweep_results(rows: list[dict[str, Any]], output_dir: Path) -> list[Pa
     try:
         import matplotlib.pyplot as plt
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on runtime env
-        raise RuntimeError("matplotlib is required to generate diagnostic sweep plots.") from exc
+        raise RuntimeError(
+            "matplotlib is required to generate diagnostic sweep plots."
+        ) from exc
 
     output_dir.mkdir(parents=True, exist_ok=True)
     by_config: dict[tuple[int, float], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        by_config[(int(row["num_steps"]), float(row["step_size_multiplier"]))].append(row)
+        by_config[(int(row["num_steps"]), float(row["step_size_multiplier"]))].append(
+            row
+        )
     for items in by_config.values():
         items.sort(key=lambda item: float(item["epsilon"]))
 
@@ -427,7 +440,9 @@ def _plot_best_m_curve(
     try:
         import matplotlib.pyplot as plt
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on runtime env
-        raise RuntimeError("matplotlib is required to generate diagnostic sweep plots.") from exc
+        raise RuntimeError(
+            "matplotlib is required to generate diagnostic sweep plots."
+        ) from exc
 
     output_dir.mkdir(parents=True, exist_ok=True)
     ordered = sorted(best_rows, key=lambda row: float(row["epsilon"]))
@@ -435,7 +450,9 @@ def _plot_best_m_curve(
     adv_map = [float(row["adversarial_map"]) for row in ordered]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(eps, adv_map, "o-", label=f"m={step_size_multiplier:g} (ranked-vote winner)")
+    ax.plot(
+        eps, adv_map, "o-", label=f"m={step_size_multiplier:g} (ranked-vote winner)"
+    )
     ax.set_xlabel("L2 epsilon")
     ax.set_ylabel("Adversarial mAP")
     ax.set_title("Best adversarial mAP vs epsilon (fixed m, best num_steps per ε)")
@@ -486,9 +503,15 @@ def run_sweep_aggregation(
             continue
         scores_npz = np.load(scores_path)
         original_scores = np.asarray(scores_npz["original_scores"], dtype=np.float32)
-        adversarial_scores = np.asarray(scores_npz["adversarial_scores"], dtype=np.float32)
+        adversarial_scores = np.asarray(
+            scores_npz["adversarial_scores"], dtype=np.float32
+        )
         targets = np.asarray(scores_npz["targets"], dtype=np.float32)
-        if original_scores.size == 0 or adversarial_scores.size == 0 or targets.size == 0:
+        if (
+            original_scores.size == 0
+            or adversarial_scores.size == 0
+            or targets.size == 0
+        ):
             print(f"[skip] empty arrays in {scores_path}")
             continue
         clean_metrics = compute_map_from_scores(original_scores, targets)
@@ -512,7 +535,8 @@ def run_sweep_aggregation(
                 clean_loss_values = [
                     float(row["clean_classification_loss"])
                     for row in summary_rows
-                    if row.get("clean_classification_loss", "") not in {"", "nan", "None"}
+                    if row.get("clean_classification_loss", "")
+                    not in {"", "nan", "None"}
                 ]
                 delta_l2_values = [
                     float(row["delta_l2"])
@@ -525,18 +549,26 @@ def run_sweep_aggregation(
                     if row.get("delta_linf", "") not in {"", "nan", "None"}
                 ]
                 if adv_loss_values:
-                    mean_adv_loss = float(np.mean(np.asarray(adv_loss_values, dtype=np.float64)))
+                    mean_adv_loss = float(
+                        np.mean(np.asarray(adv_loss_values, dtype=np.float64))
+                    )
                 if clean_loss_values:
-                    mean_clean_loss = float(np.mean(np.asarray(clean_loss_values, dtype=np.float64)))
+                    mean_clean_loss = float(
+                        np.mean(np.asarray(clean_loss_values, dtype=np.float64))
+                    )
                 if delta_l2_values:
                     l2_arr = np.asarray(delta_l2_values, dtype=np.float64)
                     mean_delta_l2 = float(np.mean(l2_arr))
                     median_delta_l2 = float(np.median(l2_arr))
                 if delta_linf_values:
-                    mean_delta_linf = float(np.mean(np.asarray(delta_linf_values, dtype=np.float64)))
+                    mean_delta_linf = float(
+                        np.mean(np.asarray(delta_linf_values, dtype=np.float64))
+                    )
 
         alpha = float(
-            np.asarray(scores_npz.get("alpha", np.asarray(float("nan"), dtype=np.float32))).reshape(-1)[0]
+            np.asarray(
+                scores_npz.get("alpha", np.asarray(float("nan"), dtype=np.float32))
+            ).reshape(-1)[0]
         )
         row = {
             "attack_id": sweep_dir.name,
@@ -707,7 +739,9 @@ def run_sweep_aggregation(
 def main() -> None:
     from src.models.audio import get_audio_model
 
-    parser = ArgumentParser(description="Compute mAP from saved audio adversarial tensors.")
+    parser = ArgumentParser(
+        description="Compute mAP from saved audio adversarial tensors."
+    )
     parser.add_argument("--audio_model_name", type=str, required=True)
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument("--tokenizer_checkpoint_path", type=str, default=None)
@@ -820,7 +854,9 @@ def main() -> None:
                 continue
             sample_idx = int(sample_idx_value)
             sample_rate = int(record.get("sample_rate", 16_000))
-            label_indices = _extract_true_labels(record=record, model_label_mids=model_label_mids)
+            label_indices = _extract_true_labels(
+                record=record, model_label_mids=model_label_mids
+            )
             if not label_indices:
                 skipped += 1
                 continue
@@ -884,7 +920,9 @@ def main() -> None:
         original_metrics = compute_map_from_scores(original_arr, target_arr)
         adversarial_metrics = compute_map_from_scores(adversarial_arr, target_arr)
         original_mean_true = _mean_true_label_probability(original_arr, target_arr)
-        adversarial_mean_true = _mean_true_label_probability(adversarial_arr, target_arr)
+        adversarial_mean_true = _mean_true_label_probability(
+            adversarial_arr, target_arr
+        )
 
         summary_rows = [
             {
@@ -940,13 +978,21 @@ def main() -> None:
                     "num_positives": int(positives_per_class[class_idx]),
                     "ap_original": float(per_class_original[class_idx]),
                     "ap_adversarial": float(per_class_adversarial[class_idx]),
-                    "ap_delta": float(per_class_adversarial[class_idx] - per_class_original[class_idx]),
+                    "ap_delta": float(
+                        per_class_adversarial[class_idx] - per_class_original[class_idx]
+                    ),
                 }
             )
         _write_csv(
             layer_dir / "map_per_class.csv",
             per_class_rows,
-            fieldnames=["class_idx", "num_positives", "ap_original", "ap_adversarial", "ap_delta"],
+            fieldnames=[
+                "class_idx",
+                "num_positives",
+                "ap_original",
+                "ap_adversarial",
+                "ap_delta",
+            ],
         )
 
         if args.save_scores:
