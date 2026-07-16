@@ -77,6 +77,44 @@ def _save_audio_spectrogram_image(
     plt.close(fig)
 
 
+def _compute_saved_audio_budget_verification(
+    *,
+    original: Tensor,
+    adversarial: Tensor,
+    metadata: Dict,
+    tolerance: float = 1e-6,
+) -> Dict[str, object]:
+    """Verify saved waveform perturbation budget from stored attack config."""
+    attack_cfg = metadata.get("attack_config", {})
+    norm = attack_cfg.get("norm")
+    epsilon = attack_cfg.get("epsilon")
+    if norm not in {"l2", "linf"} or epsilon is None:
+        return {
+            "available": False,
+            "reason": "missing_attack_config_norm_or_epsilon",
+        }
+
+    delta = (adversarial - original).detach()
+    delta_flat = delta.view(delta.shape[0], -1)
+    l2_norms = torch.norm(delta_flat, p=2, dim=1)
+    linf_norms = torch.norm(delta_flat, p=float("inf"), dim=1)
+    active_norms = l2_norms if norm == "l2" else linf_norms
+    max_active_norm = float(active_norms.max().item())
+    epsilon_value = float(epsilon)
+    within_budget = bool(max_active_norm <= (epsilon_value + tolerance))
+    violation_amount = float(max(0.0, max_active_norm - epsilon_value))
+
+    return {
+        "available": True,
+        "norm": str(norm),
+        "epsilon": epsilon_value,
+        "tolerance": float(tolerance),
+        "max_active_norm": max_active_norm,
+        "within_budget": within_budget,
+        "violation_amount": violation_amount,
+    }
+
+
 def append_metamer_metadata(metadata: Dict, output_dir: Union[str, Path]) -> None:
     """Append a single metadata record to the layer's JSONL file.
 
@@ -320,10 +358,16 @@ def save_audio_adversarial_results(
             title="Spectrogram Difference Proxy",
         )
 
+    saved_output_budget_verification = _compute_saved_audio_budget_verification(
+        original=original,
+        adversarial=adversarial,
+        metadata=metadata,
+    )
     metadata_with_paths = {
         "sample_idx": sample_idx,
         "class_label": class_label,
         **metadata,
+        "saved_output_budget_verification": saved_output_budget_verification,
         "saved_paths": saved_paths,
     }
     append_metamer_metadata(metadata_with_paths, output_dir=output_dir)

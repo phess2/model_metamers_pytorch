@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Literal, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, Literal, Optional, Sequence, Tuple, cast
 
 import torch
 import torch.nn.functional as F
@@ -58,7 +58,9 @@ def build_multihot_target(
     if num_classes <= 0:
         raise ValueError(f"num_classes must be positive, got {num_classes}")
     if not label_indices:
-        raise ValueError("true_label_indices must be non-empty for classification attacks.")
+        raise ValueError(
+            "true_label_indices must be non-empty for classification attacks."
+        )
     target = torch.zeros(num_classes, device=device, dtype=dtype)
     for label_idx in label_indices:
         idx = int(label_idx)
@@ -82,6 +84,25 @@ def classification_loss(logits: Tensor, target_multihot: Tensor) -> Tensor:
             f"{tuple(target_multihot.shape)}"
         )
     return F.binary_cross_entropy_with_logits(logits, target_multihot, reduction="mean")
+
+
+def suppression_loss(logits: Tensor, label_indices: Sequence[int]) -> Tensor:
+    """Mean BCE toward the *off* state over just the true-label columns.
+
+    Minimizing this jointly drives every true label's probability toward zero
+    (a targeted suppression objective), without pushing non-true logits up the
+    way maximizing the full multi-hot BCE would.
+    """
+    if logits.dim() == 1:
+        logits = logits.unsqueeze(0)
+    if not label_indices:
+        raise ValueError("label_indices must be non-empty for suppression attacks.")
+    index_tensor = torch.as_tensor(
+        [int(idx) for idx in label_indices], device=logits.device, dtype=torch.long
+    )
+    selected = logits.index_select(dim=-1, index=index_tensor)
+    target = torch.zeros_like(selected)
+    return F.binary_cross_entropy_with_logits(selected, target, reduction="mean")
 
 
 def representation_distance(
@@ -111,8 +132,6 @@ def representation_distance(
     elif loss_type == "cosine":
         cosine = F.cosine_similarity(current_flat, reference_flat, dim=1, eps=eps)
         per_sample = 1.0 - cosine
-    else:
-        raise ValueError(f"Unknown loss_type={loss_type!r}")
 
     if reduction == "mean":
         return per_sample.mean()
@@ -145,16 +164,45 @@ def perturbation_norms(delta: Tensor) -> Dict[str, Tensor]:
     }
 
 
+def verify_perturbation_budget(
+    delta: Tensor,
+    *,
+    norm: NormType,
+    epsilon: float,
+    tolerance: float = 1e-6,
+) -> Dict[str, Any]:
+    """Verify that a perturbation tensor stays within the configured budget."""
+    norms = perturbation_norms(delta)
+    active_norms = norms[norm]
+    max_active_norm = float(active_norms.max().item())
+    margin_to_budget = float(epsilon - max_active_norm)
+    violation_amount = float(max(0.0, max_active_norm - epsilon))
+    within_budget = bool(max_active_norm <= (epsilon + tolerance))
+    return {
+        "norm": norm,
+        "epsilon": float(epsilon),
+        "tolerance": float(tolerance),
+        "max_active_norm": max_active_norm,
+        "margin_to_budget": margin_to_budget,
+        "violation_amount": violation_amount,
+        "within_budget": within_budget,
+    }
+
+
 class _BoundedWaveformPGD:
     """Shared PGD mechanics for waveform perturbations."""
 
-    def __init__(self, config: AdversarialAttackConfig | RepresentationAttackConfig, device: str):
+    def __init__(
+        self, config: AdversarialAttackConfig | RepresentationAttackConfig, device: str
+    ):
         self.config = config
         self.device = device
 
     def _project(self, delta: Tensor) -> Tensor:
         if self.config.norm == "l2":
-            return project_l2(delta, epsilon=self.config.epsilon, eps=self.config.grad_eps)
+            return project_l2(
+                delta, epsilon=self.config.epsilon, eps=self.config.grad_eps
+            )
         if self.config.norm == "linf":
             return project_linf(delta, epsilon=self.config.epsilon)
         raise ValueError(f"Unsupported norm={self.config.norm!r}")
@@ -172,14 +220,20 @@ class _BoundedWaveformPGD:
             torch.manual_seed(self.config.seed + start_idx)
         noise = torch.randn(shape, device=self.device)
         if self.config.norm == "linf":
-            return project_linf(noise * self.config.epsilon, epsilon=self.config.epsilon)
-        projected = project_l2(noise, epsilon=self.config.epsilon, eps=self.config.grad_eps)
-        random_scale = torch.rand((shape[0],) + (1,) * (len(shape) - 1), device=self.device)
+            return project_linf(
+                noise * self.config.epsilon, epsilon=self.config.epsilon
+            )
+        projected = project_l2(
+            noise, epsilon=self.config.epsilon, eps=self.config.grad_eps
+        )
+        random_scale = torch.rand(
+            (shape[0],) + (1,) * (len(shape) - 1), device=self.device
+        )
         return projected * random_scale
 
 
 class AudioAdversarialAttacker(_BoundedWaveformPGD):
-    """Untargeted PGD on classifier logits via multilabel BCE."""
+    """Projected-gradient attacks on classifier logits via multilabel BCE."""
 
     def __init__(
         self,
@@ -194,7 +248,9 @@ class AudioAdversarialAttacker(_BoundedWaveformPGD):
 
     def _get_logits(self, waveform: Tensor) -> Tensor:
         waveform = waveform.to(self.device)
-        logits = cast(Any, self.model).get_classifier_logits(waveform, sr=self.sample_rate)
+        logits = cast(Any, self.model).get_classifier_logits(
+            waveform, sr=self.sample_rate
+        )
         if logits.dim() == 1:
             logits = logits.unsqueeze(0)
         return logits
@@ -206,24 +262,26 @@ class AudioAdversarialAttacker(_BoundedWaveformPGD):
     def _run_single_attack(
         self,
         source_waveform: Tensor,
-        target_multihot: Tensor,
+        loss_fn: Callable[[Tensor], Tensor],
+        maximize_loss: bool,
         start_idx: int,
     ) -> Tuple[Tensor, Dict]:
-        clamp_min, clamp_max = self.config.clamp_range
+        adv_config = cast(AdversarialAttackConfig, self.config)
+        clamp_min, clamp_max = adv_config.clamp_range
         source_waveform = source_waveform.detach().to(self.device)
-        target_multihot = target_multihot.detach().to(self.device)
 
         delta = self._initial_delta(source_waveform.shape, start_idx=start_idx)
         delta = self._project(delta)
         step_records = []
 
-        for step in range(self.config.num_steps):
+        for step in range(adv_config.num_steps):
             adv_waveform = (source_waveform + delta).clamp(clamp_min, clamp_max)
             adv_waveform = adv_waveform.detach().requires_grad_(True)
 
             logits = self._get_logits(adv_waveform)
-            loss = classification_loss(logits, target_multihot)
-            grad = torch.autograd.grad(loss, adv_waveform)[0]
+            loss = loss_fn(logits)
+            objective = loss if maximize_loss else -loss
+            grad = torch.autograd.grad(objective, adv_waveform)[0]
 
             with torch.no_grad():
                 delta = delta + self._step_update(grad)
@@ -242,7 +300,7 @@ class AudioAdversarialAttacker(_BoundedWaveformPGD):
 
         final_adv = (source_waveform + delta).clamp(clamp_min, clamp_max).detach()
         final_logits = self._get_logits(final_adv).detach()
-        final_loss = classification_loss(final_logits, target_multihot)
+        final_loss = loss_fn(final_logits)
         final_norms = perturbation_norms(final_adv - source_waveform)
         metadata = {
             "start_idx": start_idx,
@@ -252,6 +310,70 @@ class AudioAdversarialAttacker(_BoundedWaveformPGD):
             "steps": step_records,
         }
         return final_adv, metadata
+
+    def _attack(
+        self,
+        source_waveform: Tensor,
+        loss_fn: Callable[[Tensor], Tensor],
+        maximize_loss: bool,
+    ) -> Tuple[Tensor, Dict]:
+        adv_config = cast(AdversarialAttackConfig, self.config)
+        source_waveform = source_waveform.to(self.device)
+
+        with torch.no_grad():
+            initial_logits = self._get_logits(source_waveform)
+            initial_loss = loss_fn(initial_logits)
+
+        best_adv: Optional[Tensor] = None
+        best_meta: Optional[Dict] = None
+        best_score: Optional[float] = None
+
+        num_starts = max(1, self.config.num_random_starts)
+        for start_idx in range(num_starts):
+            candidate_adv, candidate_meta = self._run_single_attack(
+                source_waveform=source_waveform,
+                loss_fn=loss_fn,
+                maximize_loss=maximize_loss,
+                start_idx=start_idx,
+            )
+            score = float(candidate_meta["final_classification_loss"])
+            if best_score is None:
+                pick = True
+            elif maximize_loss:
+                pick = score > best_score
+            else:
+                pick = score < best_score
+            if pick:
+                best_adv = candidate_adv
+                best_meta = candidate_meta
+                best_score = score
+
+        if best_adv is None or best_meta is None:
+            raise RuntimeError(
+                "Attack failed to produce a candidate adversarial waveform."
+            )
+
+        budget = verify_perturbation_budget(
+            best_adv - source_waveform,
+            norm=adv_config.norm,
+            epsilon=adv_config.epsilon,
+        )
+        result = {
+            "best_start_idx": best_meta["start_idx"],
+            "best_final_classification_loss": best_meta["final_classification_loss"],
+            "initial_classification_loss": float(initial_loss.item()),
+            "best_delta_l2_mean": best_meta["final_delta_l2_mean"],
+            "best_delta_linf_mean": best_meta["final_delta_linf_mean"],
+            "num_random_starts": num_starts,
+            "norm": adv_config.norm,
+            "epsilon": adv_config.epsilon,
+            "step_size": adv_config.step_size,
+            "num_steps": adv_config.num_steps,
+            "classification_loss": adv_config.classification_loss,
+            "budget_verification": budget,
+            "steps": best_meta["steps"],
+        }
+        return best_adv, result
 
     def attack_untargeted(
         self,
@@ -266,46 +388,53 @@ class AudioAdversarialAttacker(_BoundedWaveformPGD):
             label_indices=true_label_indices,
             device=self.device,
         )
+        return self._attack(
+            source_waveform=source_waveform,
+            loss_fn=lambda logits: classification_loss(logits, target_multihot),
+            maximize_loss=True,
+        )
 
-        with torch.no_grad():
-            initial_logits = self._get_logits(source_waveform)
-            initial_loss = classification_loss(initial_logits, target_multihot)
+    def attack_targeted(
+        self,
+        source_waveform: Tensor,
+        target_label_indices: Sequence[int],
+    ) -> Tuple[Tensor, Dict]:
+        """Minimize multilabel BCE toward a target-class multi-hot objective."""
+        source_waveform = source_waveform.to(self.device)
+        num_classes = self._resolve_num_classes(source_waveform)
+        target_multihot = build_multihot_target(
+            num_classes=num_classes,
+            label_indices=target_label_indices,
+            device=self.device,
+        )
+        return self._attack(
+            source_waveform=source_waveform,
+            loss_fn=lambda logits: classification_loss(logits, target_multihot),
+            maximize_loss=False,
+        )
 
-        best_adv: Optional[Tensor] = None
-        best_meta: Optional[Dict] = None
-        best_score: Optional[float] = None
+    def attack_suppress_labels(
+        self,
+        source_waveform: Tensor,
+        true_label_indices: Sequence[int],
+    ) -> Tuple[Tensor, Dict]:
+        """Jointly suppress all true labels by minimizing BCE toward zero over them.
 
-        num_starts = max(1, self.config.num_random_starts)
-        for start_idx in range(num_starts):
-            candidate_adv, candidate_meta = self._run_single_attack(
-                source_waveform=source_waveform,
-                target_multihot=target_multihot,
-                start_idx=start_idx,
+        Unlike ``attack_untargeted`` (which maximizes the full multi-hot BCE and so
+        also inflates non-true logits), this optimizes a targeted objective that
+        only drives the true-label probabilities down.
+        """
+        source_waveform = source_waveform.to(self.device)
+        label_indices = [int(idx) for idx in true_label_indices]
+        if not label_indices:
+            raise ValueError(
+                "true_label_indices must be non-empty for suppression attacks."
             )
-            score = float(candidate_meta["final_classification_loss"])
-            if best_score is None or score > best_score:
-                best_adv = candidate_adv
-                best_meta = candidate_meta
-                best_score = score
-
-        if best_adv is None or best_meta is None:
-            raise RuntimeError("Attack failed to produce a candidate adversarial waveform.")
-
-        result = {
-            "best_start_idx": best_meta["start_idx"],
-            "best_final_classification_loss": best_meta["final_classification_loss"],
-            "initial_classification_loss": float(initial_loss.item()),
-            "best_delta_l2_mean": best_meta["final_delta_l2_mean"],
-            "best_delta_linf_mean": best_meta["final_delta_linf_mean"],
-            "num_random_starts": num_starts,
-            "norm": self.config.norm,
-            "epsilon": self.config.epsilon,
-            "step_size": self.config.step_size,
-            "num_steps": self.config.num_steps,
-            "classification_loss": self.config.classification_loss,
-            "steps": best_meta["steps"],
-        }
-        return best_adv, result
+        return self._attack(
+            source_waveform=source_waveform,
+            loss_fn=lambda logits: suppression_loss(logits, label_indices),
+            maximize_loss=False,
+        )
 
 
 class AudioRepresentationAttacker(_BoundedWaveformPGD):
@@ -433,7 +562,9 @@ class AudioRepresentationAttacker(_BoundedWaveformPGD):
                 best_score = score
 
         if best_adv is None or best_meta is None:
-            raise RuntimeError("Attack failed to produce a candidate adversarial waveform.")
+            raise RuntimeError(
+                "Attack failed to produce a candidate adversarial waveform."
+            )
 
         result = {
             "best_start_idx": best_meta["start_idx"],
@@ -473,7 +604,9 @@ class AudioRepresentationAttacker(_BoundedWaveformPGD):
         rep_config = cast(RepresentationAttackConfig, self.config)
         if target_rep is None:
             if target_waveform is None:
-                raise ValueError("Provide either target_waveform or target_rep for targeted attack.")
+                raise ValueError(
+                    "Provide either target_waveform or target_rep for targeted attack."
+                )
             target_rep = self.extract_representation(target_waveform).detach()
         if source_rep is None:
             source_rep = self.extract_representation(source_waveform).detach()
@@ -540,7 +673,9 @@ def audit_waveform_gradient(
         )
         if layer_name not in reps:
             available_layers = sorted(reps.keys())
-            raise KeyError(f"Unknown layer '{layer_name}'. Available: {available_layers}")
+            raise KeyError(
+                f"Unknown layer '{layer_name}'. Available: {available_layers}"
+            )
         scalar = reps[layer_name].sum()
         audit_layer = layer_name
 

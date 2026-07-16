@@ -27,12 +27,16 @@ def _load_module_from_file(module_name: str, file_path: Path):
 
 
 _AUDIO_FILTERING = _load_module_from_file(
-    "analysis_audio_filtering_for_tests", _ROOT / "src" / "analysis" / "audio_filtering.py"
+    "analysis_audio_filtering_for_tests",
+    _ROOT / "src" / "analysis" / "audio_filtering.py",
 )
 _AUDIO_ADVERSARIAL = _load_module_from_file(
-    "analysis_audio_adversarial_for_tests", _ROOT / "src" / "analysis" / "audio_adversarial.py"
+    "analysis_audio_adversarial_for_tests",
+    _ROOT / "src" / "analysis" / "audio_adversarial.py",
 )
-_SAVING = _load_module_from_file("analysis_saving_for_tests", _ROOT / "src" / "analysis" / "saving.py")
+_SAVING = _load_module_from_file(
+    "analysis_saving_for_tests", _ROOT / "src" / "analysis" / "saving.py"
+)
 
 BaseAudioModelWrapper = _AUDIO_BASE.BaseAudioModelWrapper
 get_audio_model = _AUDIO_REGISTRY.get_audio_model
@@ -44,15 +48,19 @@ RepresentationAttackConfig = _AUDIO_ADVERSARIAL.RepresentationAttackConfig
 audit_waveform_gradient = _AUDIO_ADVERSARIAL.audit_waveform_gradient
 build_multihot_target = _AUDIO_ADVERSARIAL.build_multihot_target
 classification_loss = _AUDIO_ADVERSARIAL.classification_loss
+suppression_loss = _AUDIO_ADVERSARIAL.suppression_loss
 project_l2 = _AUDIO_ADVERSARIAL.project_l2
 project_linf = _AUDIO_ADVERSARIAL.project_linf
 representation_distance = _AUDIO_ADVERSARIAL.representation_distance
+verify_perturbation_budget = _AUDIO_ADVERSARIAL.verify_perturbation_budget
 lowpass_filter_for_model = _AUDIO_FILTERING.lowpass_filter_for_model
 
 load_layer_metadata = _SAVING.load_layer_metadata
 save_audio_adversarial_results = _SAVING.save_audio_adversarial_results
 
-_RUN_AUDIO_MODEL_GPU_TESTS = os.environ.get("RUN_AUDIO_MODEL_GPU_TESTS", "").lower() in {
+_RUN_AUDIO_MODEL_GPU_TESTS = os.environ.get(
+    "RUN_AUDIO_MODEL_GPU_TESTS", ""
+).lower() in {
     "1",
     "true",
     "yes",
@@ -202,7 +210,110 @@ class AudioAdversarialTests(unittest.TestCase):
         attacked_distance = representation_distance(
             adv_rep, source_rep, loss_type="l2", reduction="mean"
         )
-        self.assertGreater(float(attacked_distance.item()), float(original_distance.item()))
+        self.assertGreater(
+            float(attacked_distance.item()), float(original_distance.item())
+        )
+
+    def test_targeted_attack_decreases_target_classification_loss(self):
+        cfg = AdversarialAttackConfig(
+            norm="l2",
+            epsilon=0.5,
+            step_size=0.05,
+            num_steps=20,
+            num_random_starts=1,
+            clamp_range=(-2.0, 2.0),
+            seed=123,
+        )
+        attacker = AudioAdversarialAttacker(
+            model=self.wrapper,
+            sample_rate=16_000,
+            config=cfg,
+            device="cpu",
+        )
+        target_labels = [2]
+        target = build_multihot_target(
+            num_classes=self.wrapper.num_classes,
+            label_indices=target_labels,
+            device="cpu",
+        )
+        clean_logits = self.wrapper.get_classifier_logits(self.source, sr=16_000)
+        clean_loss = classification_loss(clean_logits, target)
+
+        adv, metadata = attacker.attack_targeted(
+            self.source,
+            target_label_indices=target_labels,
+        )
+        adv_logits = self.wrapper.get_classifier_logits(adv, sr=16_000)
+        adv_loss = classification_loss(adv_logits, target)
+
+        self.assertLess(float(adv_loss.item()), float(clean_loss.item()))
+        self.assertLess(
+            float(metadata["best_final_classification_loss"]),
+            float(metadata["initial_classification_loss"]),
+        )
+
+    def test_suppression_loss_decreases_as_true_logits_drop(self):
+        high_logits = torch.tensor([[3.0, -1.0, 2.0, 4.0]])
+        low_logits = torch.tensor([[-3.0, -1.0, 2.0, -4.0]])
+        label_indices = [0, 3]
+        high = suppression_loss(high_logits, label_indices)
+        low = suppression_loss(low_logits, label_indices)
+        self.assertLess(float(low.item()), float(high.item()))
+        # BCE toward zero over the selected columns only.
+        expected_low = torch.nn.functional.binary_cross_entropy_with_logits(
+            low_logits[:, label_indices], torch.zeros(1, 2), reduction="mean"
+        )
+        self.assertAlmostEqual(float(low.item()), float(expected_low.item()), places=5)
+
+    def test_suppress_attack_reduces_true_label_probability_within_budget(self):
+        cfg = AdversarialAttackConfig(
+            norm="l2",
+            epsilon=0.5,
+            step_size=0.05,
+            num_steps=30,
+            num_random_starts=1,
+            clamp_range=(-2.0, 2.0),
+            seed=123,
+        )
+        attacker = AudioAdversarialAttacker(
+            model=self.wrapper,
+            sample_rate=16_000,
+            config=cfg,
+            device="cpu",
+        )
+        # Keep the source inside the clamp range (like real [-1, 1] audio) so
+        # projection alone governs the perturbation budget.
+        bounded_source = self.source.clamp(-1.5, 1.5)
+        clean_logits = self.wrapper.get_classifier_logits(bounded_source, sr=16_000)
+        clean_true_probs = torch.sigmoid(clean_logits[0, self.true_labels])
+
+        adv, metadata = attacker.attack_suppress_labels(
+            bounded_source, true_label_indices=self.true_labels
+        )
+        adv_logits = self.wrapper.get_classifier_logits(adv, sr=16_000)
+        adv_true_probs = torch.sigmoid(adv_logits[0, self.true_labels])
+
+        self.assertLess(
+            float(adv_true_probs.mean().item()),
+            float(clean_true_probs.mean().item()),
+        )
+        self.assertLess(
+            float(metadata["best_final_classification_loss"]),
+            float(metadata["initial_classification_loss"]),
+        )
+        budget = metadata["budget_verification"]
+        self.assertTrue(budget["within_budget"])
+        self.assertLessEqual(float(budget["max_active_norm"]), cfg.epsilon + 1e-5)
+
+    def test_verify_perturbation_budget_detects_violation(self):
+        delta = torch.tensor([[[0.4, 0.3, 0.0, 0.0]]], dtype=torch.float32)
+        report_l2_ok = verify_perturbation_budget(delta, norm="l2", epsilon=0.6)
+        report_l2_bad = verify_perturbation_budget(delta, norm="l2", epsilon=0.4)
+        report_linf_bad = verify_perturbation_budget(delta, norm="linf", epsilon=0.2)
+
+        self.assertTrue(report_l2_ok["within_budget"])
+        self.assertFalse(report_l2_bad["within_budget"])
+        self.assertFalse(report_linf_bad["within_budget"])
 
     def test_save_audio_adversarial_results_outputs_files_and_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -216,6 +327,7 @@ class AudioAdversarialTests(unittest.TestCase):
                 "sample_rate": 32_000,
                 "attack_mode": "untargeted",
                 "classification_loss": 1.23,
+                "attack_config": {"norm": "l2", "epsilon": 1.0},
                 **lowpass_metadata,
             }
             saved_paths = save_audio_adversarial_results(
@@ -235,8 +347,17 @@ class AudioAdversarialTests(unittest.TestCase):
             self.assertIn("saved_paths", loaded_meta[3])
             self.assertTrue(loaded_meta[3]["lowpass_filter_applied"])
             self.assertEqual(loaded_meta[3]["lowpass_filter_cutoff_hz"], 8_000)
+            self.assertIn("saved_output_budget_verification", loaded_meta[3])
+            self.assertTrue(
+                loaded_meta[3]["saved_output_budget_verification"]["available"]
+            )
+            self.assertIn(
+                "within_budget", loaded_meta[3]["saved_output_budget_verification"]
+            )
             saved_adversarial = torch.load(saved_paths["adversarial_pt"])
-            self.assertTrue(torch.allclose(saved_adversarial, filtered_adversarial.cpu()))
+            self.assertTrue(
+                torch.allclose(saved_adversarial, filtered_adversarial.cpu())
+            )
 
     def test_audit_waveform_gradient_reports_finite_nonzero(self):
         report = audit_waveform_gradient(

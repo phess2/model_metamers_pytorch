@@ -1,4 +1,4 @@
-"""Run untargeted classification (BCE) audio adversarial evaluation."""
+"""Run targeted or untargeted classification (BCE) audio adversarial evaluation."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 from scipy.io import wavfile
+
 try:
     from sklearn.metrics import average_precision_score as _sk_average_precision_score
 except ModuleNotFoundError:  # pragma: no cover - exercised by fallback path tests
@@ -57,8 +58,35 @@ def resolve_attack_step_size(
     if step_size is not None:
         return float(step_size), "explicit_step_size"
     if norm == "l2":
-        return float(step_size_multiplier * float(epsilon) / float(num_steps)), "epsilon_scaled"
+        return (
+            float(step_size_multiplier * float(epsilon) / float(num_steps)),
+            "epsilon_scaled",
+        )
     return 0.002, "legacy_default"
+
+
+def compute_budget_utilization(
+    *,
+    max_active_norm: float,
+    epsilon: float,
+) -> float | None:
+    """Fraction of the norm budget used by the perturbation (None when epsilon == 0)."""
+    if epsilon <= 0.0:
+        return None
+    return float(max_active_norm) / float(epsilon)
+
+
+def _mean_of_row_values(rows: list[dict[str, object]], key: str) -> float:
+    """Mean of a numeric per-sample column, ignoring empty/missing entries."""
+    values: list[float] = []
+    for row in rows:
+        value = row.get(key, "")
+        if value in ("", None):
+            continue
+        values.append(float(value))  # type: ignore[arg-type]
+    if not values:
+        return float("nan")
+    return float(np.mean(np.asarray(values, dtype=np.float64)))
 
 
 def _average_precision_binary(y_true: np.ndarray, y_score: np.ndarray) -> float:
@@ -143,7 +171,9 @@ def _slice_clip(
     end_sample = start_sample + clip_samples
     waveform_clip = waveform[:, start_sample:end_sample]
     if waveform_clip.shape[-1] == 0:
-        raise ValueError("Empty clip after slicing. Adjust --start_seconds/--clip_seconds.")
+        raise ValueError(
+            "Empty clip after slicing. Adjust --start_seconds/--clip_seconds."
+        )
     return waveform_clip
 
 
@@ -176,9 +206,41 @@ def _load_selected_examples(
     for example_idx, example in enumerate(tfrecord_examples):
         if example_idx in sample_indices:
             selected_examples[example_idx] = example
-        if example_idx >= max_requested_idx and len(selected_examples) == len(sample_indices):
+        if example_idx >= max_requested_idx and len(selected_examples) == len(
+            sample_indices
+        ):
             break
     return selected_examples
+
+
+def _find_first_indices_without_label(
+    *,
+    tfrecord_path: Path,
+    excluded_label: int,
+    count: int,
+    decode_labels_fn: Any,
+) -> list[int]:
+    if count <= 0:
+        return []
+    if example_loader is None:
+        raise ModuleNotFoundError(
+            "Missing dependency 'tfrecord'. Install it to load AudioSet TFRecord examples."
+        )
+    tfrecord_examples = example_loader(
+        str(tfrecord_path),
+        index_path=None,
+        description=None,
+        compression_type="gzip",
+    )
+    selected_indices: list[int] = []
+    for example_idx, example in enumerate(tfrecord_examples):
+        labels_list = [int(x) for x in decode_labels_fn(example)]
+        if excluded_label in labels_list:
+            continue
+        selected_indices.append(int(example_idx))
+        if len(selected_indices) >= count:
+            break
+    return selected_indices
 
 
 def _format_label_indices(indices: list[int]) -> str:
@@ -231,7 +293,9 @@ def _resolve_single_label_targets(
     return targets
 
 
-def _extract_model_logits(model: torch.nn.Module, waveform: torch.Tensor, sr: int) -> torch.Tensor | None:
+def _extract_model_logits(
+    model: torch.nn.Module, waveform: torch.Tensor, sr: int
+) -> torch.Tensor | None:
     try:
         logits = cast(Any, model).get_classifier_logits(waveform, sr=sr)
         return logits.detach().cpu()
@@ -259,6 +323,8 @@ def main() -> None:
         AudioAdversarialAttacker,
         classification_loss,
         perturbation_norms,
+        suppression_loss,
+        verify_perturbation_budget,
     )
     from src.analysis.audio_classification import (
         aggregate_multilabel_topk,
@@ -267,14 +333,19 @@ def main() -> None:
         remap_model_indices_to_audioset_labels,
         summarize_multilabel_logits,
     )
-    from src.analysis.audio_filtering import lowpass_filter_for_model
-    from src.analysis.saving import save_adversarial_results_csv, save_audio_adversarial_results
+    from src.analysis.audio_filtering import finalize_audio_adversarial_for_model
+    from src.analysis.saving import (
+        save_adversarial_results_csv,
+        save_audio_adversarial_results,
+    )
     from src.models.audio import get_audio_model
 
     parser = ArgumentParser(
-        description="Evaluate untargeted audio adversarial robustness (BCE on logits)"
+        description="Evaluate targeted/untargeted audio adversarial robustness (BCE on logits)"
     )
-    parser.add_argument("--audio_model_name", type=str, default="audiomae_as2m_ft_as20k")
+    parser.add_argument(
+        "--audio_model_name", type=str, default="audiomae_as2m_ft_as20k"
+    )
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument("--tokenizer_checkpoint_path", type=str, default=None)
     parser.add_argument(
@@ -285,6 +356,15 @@ def main() -> None:
     )
     parser.add_argument("--list_layers", action="store_true")
     parser.add_argument("--indices", type=str, default="0-9")
+    parser.add_argument(
+        "--first_non_speech_count",
+        type=int,
+        default=0,
+        help=(
+            "If >0, automatically select this many earliest TFRecord indices whose "
+            "decoded labels do not include Speech (AudioSet label 0)."
+        ),
+    )
     parser.add_argument("--norm", type=str, choices=["l2", "linf"], default="l2")
     parser.add_argument("--epsilon", type=float, required=True)
     parser.add_argument(
@@ -330,6 +410,26 @@ def main() -> None:
     )
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument(
+        "--attack_mode",
+        type=str,
+        choices=["untargeted", "targeted", "suppress"],
+        default="untargeted",
+        help=(
+            "untargeted: maximize full multi-hot BCE; targeted: minimize BCE toward "
+            "--target_audioset_labels; suppress: jointly drive all ground-truth "
+            "label probabilities down (targeted suppression objective)."
+        ),
+    )
+    parser.add_argument(
+        "--target_audioset_labels",
+        type=str,
+        default="0",
+        help=(
+            "Comma/range spec of AudioSet labels to target for targeted attacks. "
+            "Example: '0' or '0,1,2'. Ignored in untargeted mode."
+        ),
+    )
+    parser.add_argument(
         "--single_label_targets",
         action="store_true",
         help=(
@@ -355,6 +455,9 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.single_label_targets and args.attack_mode != "untargeted":
+        raise SystemExit("--single_label_targets is only supported in untargeted mode.")
+
     if args.num_steps <= 0:
         raise SystemExit("--num_steps must be positive.")
 
@@ -367,7 +470,7 @@ def main() -> None:
     )
 
     sample_indices = parse_indices(args.indices)
-    if len(sample_indices) == 0:
+    if len(sample_indices) == 0 and args.first_non_speech_count <= 0:
         print("ERROR: --indices resolved to an empty set.", file=sys.stderr)
         sys.exit(1)
 
@@ -416,6 +519,24 @@ def main() -> None:
         sys.exit(1)
     first_tfrecord = tfrecord_paths[0]
 
+    if args.first_non_speech_count > 0:
+        sample_indices = _find_first_indices_without_label(
+            tfrecord_path=first_tfrecord,
+            excluded_label=0,
+            count=int(args.first_non_speech_count),
+            decode_labels_fn=decode_audioset_labels,
+        )
+        if len(sample_indices) < int(args.first_non_speech_count):
+            print(
+                "ERROR: Unable to find enough non-Speech TFRecord examples. "
+                f"Requested {args.first_non_speech_count}, found {len(sample_indices)}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f"Resolved non-Speech TFRecord indices: {','.join(str(x) for x in sample_indices)}"
+        )
+
     selected_examples = _load_selected_examples(
         tfrecord_path=first_tfrecord,
         sample_indices=sample_indices,
@@ -428,6 +549,17 @@ def main() -> None:
     epsilon_token = epsilon_to_filename_token(args.epsilon)
     step_multiplier_token = _format_float_token(args.step_size_multiplier)
     attack_scope_suffix = "_single_label" if args.single_label_targets else ""
+    attack_mode_suffix = ""
+    target_audioset_labels = parse_indices(args.target_audioset_labels)
+    if args.attack_mode == "targeted":
+        if len(target_audioset_labels) == 0:
+            raise SystemExit(
+                "--target_audioset_labels must resolve to at least one label."
+            )
+        target_tokens = "-".join(f"{idx:04d}" for idx in target_audioset_labels)
+        attack_mode_suffix = f"_targeted_label{target_tokens}"
+    elif args.attack_mode == "suppress":
+        attack_mode_suffix = "_suppress"
     output_base = (
         Path(args.output_root) / args.audio_model_name
         if args.output_root is not None
@@ -436,22 +568,23 @@ def main() -> None:
     if args.sweep_scores_only:
         attack_id = (
             f"adversarial_{args.norm}_eps_{epsilon_token}_steps_{args.num_steps}_m_"
-            f"{step_multiplier_token}{attack_scope_suffix}"
+            f"{step_multiplier_token}{attack_scope_suffix}{attack_mode_suffix}"
         )
         exp_root = output_base / "adversarial_sweeps" / attack_id
     else:
-        attack_id = f"adversarial_{args.norm}_eps_{epsilon_token}{attack_scope_suffix}"
+        attack_id = f"adversarial_{args.norm}_eps_{epsilon_token}{attack_scope_suffix}{attack_mode_suffix}"
         exp_root = output_base / "adversarial" / attack_id
     layer_output_dir = exp_root / layer_name
     top_level_csv_path = output_base / "adversarial" / f"{attack_id}.csv"
     audioset_label_names = _load_audioset_label_names(args.audioset_label_map_csv)
 
     print(
-        f"Running untargeted {args.norm.upper()} BCE classification attack on "
+        f"Running {args.attack_mode} {args.norm.upper()} BCE classification attack on "
         f"{len(sample_indices)} samples "
         f"(epsilon={args.epsilon}, steps={args.num_steps}, alpha={effective_step_size}, "
         f"alpha_source={step_size_source}, m={args.step_size_multiplier}, "
         f"single_label_targets={args.single_label_targets}, "
+        f"target_audioset_labels={target_audioset_labels if args.attack_mode == 'targeted' else []}, "
         f"sweep_scores_only={args.sweep_scores_only})"
     )
 
@@ -481,6 +614,7 @@ def main() -> None:
             clip_seconds=args.clip_seconds,
         )
         source_waveform = source_clip.unsqueeze(0).to(args.device)
+        source_waveform = source_waveform.clamp(args.clamp_min, args.clamp_max)
 
         if not model_verified:
             _verify_model_supports_classification_attack(
@@ -511,7 +645,26 @@ def main() -> None:
         if isinstance(ytid_value, bytes):
             ytid_value = ytid_value.decode("utf-8", errors="replace")
 
-        if args.single_label_targets:
+        if args.attack_mode == "targeted":
+            target_specs = _resolve_single_label_targets(
+                labels_list=target_audioset_labels,
+                model_label_mids=model_label_mids,
+                remap_fn=remap_audioset_labels_to_model_indices,
+            )
+            if not target_specs:
+                print(
+                    "ERROR: No targeted labels could be remapped for this model.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            target_batches = [
+                (
+                    int(item["target_audioset_label"]),
+                    [int(item["target_model_label"])],
+                )
+                for item in target_specs
+            ]
+        elif args.single_label_targets:
             target_specs = _resolve_single_label_targets(
                 labels_list=labels_list,
                 model_label_mids=model_label_mids,
@@ -531,13 +684,18 @@ def main() -> None:
                 for item in target_specs
             ]
         else:
-            target_batches = [(int(labels_list[0]), [int(x) for x in labels_for_scoring])]
+            target_batches = [
+                (int(labels_list[0]), [int(x) for x in labels_for_scoring])
+            ]
 
-        base_class_label = _sanitize_label(str(ytid_value)) if ytid_value else "audioset"
+        base_class_label = (
+            _sanitize_label(str(ytid_value)) if ytid_value else "audioset"
+        )
         if not base_class_label:
             base_class_label = "audioset"
         all_source_label_names = [
-            audioset_label_names.get(int(idx), f"label_{int(idx)}") for idx in labels_list
+            audioset_label_names.get(int(idx), f"label_{int(idx)}")
+            for idx in labels_list
         ]
 
         for target_audioset_label, target_model_labels in target_batches:
@@ -567,46 +725,148 @@ def main() -> None:
                 config=attack_config,
                 device=args.device,
             )
-            adversarial, attack_metadata = attacker.attack_untargeted(
-                source_waveform=source_waveform,
-                true_label_indices=target_model_labels,
-            )
+            if args.attack_mode == "targeted":
+                adversarial, attack_metadata = attacker.attack_targeted(
+                    source_waveform=source_waveform,
+                    target_label_indices=target_model_labels,
+                )
+            elif args.attack_mode == "suppress":
+                adversarial, attack_metadata = attacker.attack_suppress_labels(
+                    source_waveform=source_waveform,
+                    true_label_indices=target_model_labels,
+                )
+            else:
+                adversarial, attack_metadata = attacker.attack_untargeted(
+                    source_waveform=source_waveform,
+                    true_label_indices=target_model_labels,
+                )
 
-            adversarial, lowpass_metadata = lowpass_filter_for_model(
-                adversarial,
+            pre_lowpass_budget = attack_metadata.get("budget_verification", {})
+
+            adversarial, lowpass_metadata = finalize_audio_adversarial_for_model(
+                source=source_waveform,
+                adversarial=adversarial,
                 model_name=args.audio_model_name,
                 sample_rate=int(file_sr),
+                norm=args.norm,
+                epsilon=float(args.epsilon),
+                clamp_range=(args.clamp_min, args.clamp_max),
             )
             delta = adversarial - source_waveform
             norms = perturbation_norms(delta)
+            post_lowpass_budget = verify_perturbation_budget(
+                delta,
+                norm=args.norm,
+                epsilon=float(args.epsilon),
+            )
+            budget_utilization_pre_lowpass = (
+                compute_budget_utilization(
+                    max_active_norm=float(pre_lowpass_budget["max_active_norm"]),
+                    epsilon=float(args.epsilon),
+                )
+                if "max_active_norm" in pre_lowpass_budget
+                else None
+            )
+            budget_utilization_post_lowpass = compute_budget_utilization(
+                max_active_norm=float(post_lowpass_budget["max_active_norm"]),
+                epsilon=float(args.epsilon),
+            )
+            if not bool(post_lowpass_budget["within_budget"]):
+                raise RuntimeError(
+                    f"Finalized sample {sample_idx} exceeds its {args.norm} budget: "
+                    f"{post_lowpass_budget}"
+                )
+            if (
+                budget_utilization_post_lowpass is not None
+                and budget_utilization_post_lowpass < 0.9
+            ):
+                raise RuntimeError(
+                    f"Finalized sample {sample_idx} undershoots its {args.norm} budget: "
+                    f"utilization={budget_utilization_post_lowpass:.6f}"
+                )
+            high_frequency_ratio = lowpass_metadata[
+                "perturbation_high_frequency_energy_ratio"
+            ]
+            if high_frequency_ratio is not None and float(high_frequency_ratio) > 1e-6:
+                raise RuntimeError(
+                    f"Finalized sample {sample_idx} violates the model Nyquist cutoff: "
+                    f"high_frequency_energy_ratio={float(high_frequency_ratio):.3e}"
+                )
             adv_logits = _extract_model_logits(model, adversarial, sr=int(file_sr))
             final_classification_loss = None
             clean_classification_loss = None
+            source_target_label_prob = None
+            adversarial_target_label_prob = None
+            mean_true_label_prob_source = None
+            mean_true_label_prob_adversarial = None
+            frac_true_labels_suppressed = None
+            num_true_labels = len(target_model_labels)
             if adv_logits is not None and source_logits is not None:
                 target = torch.zeros_like(adv_logits)
                 for label_idx in target_model_labels:
                     target[..., int(label_idx)] = 1.0
-                clean_classification_loss = float(
-                    classification_loss(source_logits.to(args.device), target.to(args.device)).item()
+                if args.attack_mode == "suppress":
+                    clean_classification_loss = float(
+                        suppression_loss(
+                            source_logits.to(args.device), target_model_labels
+                        ).item()
+                    )
+                    final_classification_loss = float(
+                        suppression_loss(
+                            adv_logits.to(args.device), target_model_labels
+                        ).item()
+                    )
+                else:
+                    clean_classification_loss = float(
+                        classification_loss(
+                            source_logits.to(args.device), target.to(args.device)
+                        ).item()
+                    )
+                    final_classification_loss = float(
+                        classification_loss(
+                            adv_logits.to(args.device), target.to(args.device)
+                        ).item()
+                    )
+                clean_probs = (
+                    torch.sigmoid(source_logits)
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.float32)
                 )
-                final_classification_loss = float(
-                    classification_loss(adv_logits.to(args.device), target.to(args.device)).item()
+                adv_probs = (
+                    torch.sigmoid(adv_logits).detach().cpu().numpy().astype(np.float32)
                 )
-                clean_probs = torch.sigmoid(source_logits).detach().cpu().numpy().astype(np.float32)
-                adv_probs = torch.sigmoid(adv_logits).detach().cpu().numpy().astype(np.float32)
                 target_np = np.zeros_like(clean_probs, dtype=np.float32)
                 for label_idx in target_model_labels:
                     target_np[..., int(label_idx)] = 1.0
+                true_label_cols = [int(idx) for idx in target_model_labels]
+                clean_true_probs = clean_probs[..., true_label_cols]
+                adv_true_probs = adv_probs[..., true_label_cols]
+                source_target_label_prob = float(np.max(clean_true_probs))
+                adversarial_target_label_prob = float(np.max(adv_true_probs))
+                mean_true_label_prob_source = float(np.mean(clean_true_probs))
+                mean_true_label_prob_adversarial = float(np.mean(adv_true_probs))
+                frac_true_labels_suppressed = float(
+                    np.mean((adv_true_probs < 0.5).astype(np.float32))
+                )
                 score_original.append(clean_probs.reshape(-1))
                 score_adversarial.append(adv_probs.reshape(-1))
                 score_targets.append(target_np.reshape(-1))
 
             source_logits_summary = (
-                summarize_multilabel_logits(source_logits, true_labels=target_model_labels)
+                summarize_multilabel_logits(
+                    source_logits, true_labels=labels_for_scoring
+                )
                 if source_logits is not None
                 else None
             )
             adv_logits_summary = (
+                summarize_multilabel_logits(adv_logits, true_labels=labels_for_scoring)
+                if adv_logits is not None
+                else None
+            )
+            adv_target_summary = (
                 summarize_multilabel_logits(adv_logits, true_labels=target_model_labels)
                 if adv_logits is not None
                 else None
@@ -620,19 +880,25 @@ def main() -> None:
             if adv_logits_summary is not None:
                 mapped_predicted_label_idx = int(
                     remap_model_indices_to_audioset_labels(
-                        predicted_indices=[int(adv_logits_summary["predicted_label_idx"])],
+                        predicted_indices=[
+                            int(adv_logits_summary["predicted_label_idx"])
+                        ],
                         model_label_mids=model_label_mids,
                     )[0]
                 )
-                mapped_predicted_top5_label_indices = remap_model_indices_to_audioset_labels(
-                    predicted_indices=adv_logits_summary["predicted_top5_label_indices"],
-                    model_label_mids=model_label_mids,
+                mapped_predicted_top5_label_indices = (
+                    remap_model_indices_to_audioset_labels(
+                        predicted_indices=adv_logits_summary[
+                            "predicted_top5_label_indices"
+                        ],
+                        model_label_mids=model_label_mids,
+                    )
                 )
 
             metadata = {
                 "model_name": args.audio_model_name,
                 "layer_name": layer_name,
-                "attack_mode": "untargeted",
+                "attack_mode": args.attack_mode,
                 "attack_id": attack_id,
                 "sample_rate": int(file_sr),
                 "single_label_attack": bool(args.single_label_targets),
@@ -645,7 +911,7 @@ def main() -> None:
                     "tfrecord_example_index": int(sample_idx),
                     "ytid": ytid_value,
                     "labels": labels_list,
-                    "labels_for_scoring": target_model_labels,
+                    "labels_for_scoring": labels_for_scoring,
                 },
                 "attack_config": {
                     "norm": args.norm,
@@ -657,7 +923,11 @@ def main() -> None:
                     "step_size_multiplier": args.step_size_multiplier,
                     "num_steps": args.num_steps,
                     "num_random_starts": args.num_random_starts,
-                    "loss": "bce_multihot",
+                    "loss": (
+                        "suppression_bce"
+                        if args.attack_mode == "suppress"
+                        else "bce_multihot"
+                    ),
                     "clamp_range": [args.clamp_min, args.clamp_max],
                 },
                 "classification_loss": final_classification_loss,
@@ -667,6 +937,26 @@ def main() -> None:
                 "delta_l2": float(norms["l2"].mean().item()),
                 "delta_linf": float(norms["linf"].mean().item()),
                 "snr_db": _snr_db(signal=source_waveform, noise=delta),
+                "target_source_probability": source_target_label_prob,
+                "target_adversarial_probability": adversarial_target_label_prob,
+                "num_true_labels": num_true_labels,
+                "mean_true_label_prob_source": mean_true_label_prob_source,
+                "mean_true_label_prob_adversarial": mean_true_label_prob_adversarial,
+                "frac_true_labels_suppressed": frac_true_labels_suppressed,
+                "target_top1_hit": (
+                    bool(adv_target_summary["top1_hit"])
+                    if adv_target_summary is not None
+                    else None
+                ),
+                "target_top5_hit": (
+                    bool(adv_target_summary["top5_hit"])
+                    if adv_target_summary is not None
+                    else None
+                ),
+                "budget_verification_pre_lowpass": pre_lowpass_budget,
+                "budget_verification_post_lowpass": post_lowpass_budget,
+                "budget_utilization_pre_lowpass": budget_utilization_pre_lowpass,
+                "budget_utilization_post_lowpass": budget_utilization_post_lowpass,
                 "attack_summary": {
                     "best_start_idx": int(attack_metadata["best_start_idx"]),
                     "best_final_classification_loss": float(
@@ -676,8 +966,16 @@ def main() -> None:
                         attack_metadata["initial_classification_loss"]
                     ),
                     "best_delta_l2_mean": float(attack_metadata["best_delta_l2_mean"]),
-                    "best_delta_linf_mean": float(attack_metadata["best_delta_linf_mean"]),
+                    "best_delta_linf_mean": float(
+                        attack_metadata["best_delta_linf_mean"]
+                    ),
                     "num_random_starts": int(attack_metadata["num_random_starts"]),
+                    "budget_within_epsilon_pre_lowpass": bool(
+                        pre_lowpass_budget.get("within_budget", False)
+                    ),
+                    "budget_within_epsilon_post_lowpass": bool(
+                        post_lowpass_budget["within_budget"]
+                    ),
                 },
                 **lowpass_metadata,
             }
@@ -777,21 +1075,77 @@ def main() -> None:
                         if source_logits_summary is not None
                         else ""
                     ),
-                    "attack_mode": "untargeted",
+                    "attack_mode": args.attack_mode,
                     "single_label_attack": bool(args.single_label_targets),
                     "layer_name": layer_name,
                     "delta_l2": float(norms["l2"].mean().item()),
                     "delta_linf": float(norms["linf"].mean().item()),
+                    "target_source_probability": source_target_label_prob,
+                    "target_adversarial_probability": adversarial_target_label_prob,
+                    "num_true_labels": num_true_labels,
+                    "mean_true_label_prob_source": (
+                        mean_true_label_prob_source
+                        if mean_true_label_prob_source is not None
+                        else ""
+                    ),
+                    "mean_true_label_prob_adversarial": (
+                        mean_true_label_prob_adversarial
+                        if mean_true_label_prob_adversarial is not None
+                        else ""
+                    ),
+                    "frac_true_labels_suppressed": (
+                        frac_true_labels_suppressed
+                        if frac_true_labels_suppressed is not None
+                        else ""
+                    ),
+                    "target_top1_hit": (
+                        bool(adv_target_summary["top1_hit"])
+                        if adv_target_summary is not None
+                        else ""
+                    ),
+                    "target_top5_hit": (
+                        bool(adv_target_summary["top5_hit"])
+                        if adv_target_summary is not None
+                        else ""
+                    ),
+                    "budget_within_epsilon_pre_lowpass": bool(
+                        pre_lowpass_budget.get("within_budget", False)
+                    ),
+                    "budget_within_epsilon_post_lowpass": bool(
+                        post_lowpass_budget["within_budget"]
+                    ),
+                    "budget_max_norm_post_lowpass": float(
+                        post_lowpass_budget["max_active_norm"]
+                    ),
+                    "budget_violation_amount_post_lowpass": float(
+                        post_lowpass_budget["violation_amount"]
+                    ),
+                    "budget_utilization_pre_lowpass": (
+                        budget_utilization_pre_lowpass
+                        if budget_utilization_pre_lowpass is not None
+                        else ""
+                    ),
+                    "budget_utilization_post_lowpass": (
+                        budget_utilization_post_lowpass
+                        if budget_utilization_post_lowpass is not None
+                        else ""
+                    ),
                     "snr_db": metadata["snr_db"],
                     "classification_loss": final_classification_loss,
                     "clean_classification_loss": clean_classification_loss,
-                    "initial_classification_loss": metadata["initial_classification_loss"],
+                    "initial_classification_loss": metadata[
+                        "initial_classification_loss"
+                    ],
                     "epsilon": float(args.epsilon),
                     "alpha": float(effective_step_size),
                     "num_steps": int(args.num_steps),
                     "step_size_multiplier": float(args.step_size_multiplier),
-                    "lowpass_filter_applied": lowpass_metadata["lowpass_filter_applied"],
-                    "lowpass_filter_cutoff_hz": lowpass_metadata["lowpass_filter_cutoff_hz"],
+                    "lowpass_filter_applied": lowpass_metadata[
+                        "lowpass_filter_applied"
+                    ],
+                    "lowpass_filter_cutoff_hz": lowpass_metadata[
+                        "lowpass_filter_cutoff_hz"
+                    ],
                     "lowpass_filter_effective_cutoff_hz": lowpass_metadata[
                         "lowpass_filter_effective_cutoff_hz"
                     ],
@@ -804,6 +1158,7 @@ def main() -> None:
                     "target_audioset_label": target_audioset_label,
                     "target_model_label": target_model_label,
                     "target_label_name": target_label_name,
+                    "attack_mode": args.attack_mode,
                     "epsilon": float(args.epsilon),
                     "alpha": float(effective_step_size),
                     "num_steps": int(args.num_steps),
@@ -812,6 +1167,50 @@ def main() -> None:
                     "classification_loss": final_classification_loss,
                     "delta_l2": float(norms["l2"].mean().item()),
                     "delta_linf": float(norms["linf"].mean().item()),
+                    "target_source_probability": source_target_label_prob,
+                    "target_adversarial_probability": adversarial_target_label_prob,
+                    "num_true_labels": num_true_labels,
+                    "mean_true_label_prob_source": (
+                        mean_true_label_prob_source
+                        if mean_true_label_prob_source is not None
+                        else ""
+                    ),
+                    "mean_true_label_prob_adversarial": (
+                        mean_true_label_prob_adversarial
+                        if mean_true_label_prob_adversarial is not None
+                        else ""
+                    ),
+                    "frac_true_labels_suppressed": (
+                        frac_true_labels_suppressed
+                        if frac_true_labels_suppressed is not None
+                        else ""
+                    ),
+                    "target_top1_hit": (
+                        bool(adv_target_summary["top1_hit"])
+                        if adv_target_summary is not None
+                        else ""
+                    ),
+                    "target_top5_hit": (
+                        bool(adv_target_summary["top5_hit"])
+                        if adv_target_summary is not None
+                        else ""
+                    ),
+                    "budget_within_epsilon_pre_lowpass": bool(
+                        pre_lowpass_budget.get("within_budget", False)
+                    ),
+                    "budget_within_epsilon_post_lowpass": bool(
+                        post_lowpass_budget["within_budget"]
+                    ),
+                    "budget_utilization_pre_lowpass": (
+                        budget_utilization_pre_lowpass
+                        if budget_utilization_pre_lowpass is not None
+                        else ""
+                    ),
+                    "budget_utilization_post_lowpass": (
+                        budget_utilization_post_lowpass
+                        if budget_utilization_post_lowpass is not None
+                        else ""
+                    ),
                 }
             )
             sweep_delta_l2_values.append(float(norms["l2"].mean().item()))
@@ -822,10 +1221,26 @@ def main() -> None:
                 if final_classification_loss is not None
                 else "n/a"
             )
+            suppress_str = ""
+            if args.attack_mode == "suppress":
+                mean_prob_str = (
+                    f"{mean_true_label_prob_adversarial:.4f}"
+                    if mean_true_label_prob_adversarial is not None
+                    else "n/a"
+                )
+                frac_str = (
+                    f"{frac_true_labels_suppressed:.4f}"
+                    if frac_true_labels_suppressed is not None
+                    else "n/a"
+                )
+                suppress_str = (
+                    f" mean_true_prob_adv={mean_prob_str} frac_suppressed={frac_str}"
+                )
             print(
-                f"sample={sample_idx} layer={layer_name} mode=untargeted "
+                f"sample={sample_idx} layer={layer_name} mode={args.attack_mode} "
                 f"target={target_audioset_label}:{target_label_name} "
-                f"bce={loss_str} delta_l2={float(norms['l2'].mean().item()):.6f}"
+                f"bce={loss_str} delta_l2={float(norms['l2'].mean().item()):.6f} "
+                f"budget_ok={bool(post_lowpass_budget['within_budget'])}{suppress_str}"
             )
 
     summary_path = layer_output_dir / "summary.csv"
@@ -834,12 +1249,18 @@ def main() -> None:
         save_adversarial_results_csv(rows=sweep_metrics_rows, output_path=summary_path)
     else:
         save_adversarial_results_csv(rows=rows, output_path=summary_path)
-        _write_vision_style_adversarial_csv(rows=vision_style_rows, output_path=top_level_csv_path)
+        _write_vision_style_adversarial_csv(
+            rows=vision_style_rows, output_path=top_level_csv_path
+        )
     source_metrics = aggregate_multilabel_topk(source_summaries)
     adversarial_metrics = aggregate_multilabel_topk(adversarial_summaries)
     if adversarial_summaries:
-        print(f"Layer={layer_name} source Top-1 accuracy: {source_metrics['top1_acc']:.4f}")
-        print(f"Layer={layer_name} source Top-5 accuracy: {source_metrics['top5_acc']:.4f}")
+        print(
+            f"Layer={layer_name} source Top-1 accuracy: {source_metrics['top1_acc']:.4f}"
+        )
+        print(
+            f"Layer={layer_name} source Top-5 accuracy: {source_metrics['top5_acc']:.4f}"
+        )
         print(
             f"Layer={layer_name} adversarial Top-1 accuracy: {adversarial_metrics['top1_acc']:.4f}"
         )
@@ -847,7 +1268,9 @@ def main() -> None:
             f"Layer={layer_name} adversarial Top-5 accuracy: {adversarial_metrics['top5_acc']:.4f}"
         )
     else:
-        print(f"Layer={layer_name} classification metrics unavailable (no classifier head).")
+        print(
+            f"Layer={layer_name} classification metrics unavailable (no classifier head)."
+        )
     if score_targets:
         original_arr = np.stack(score_original, axis=0).astype(np.float32)
         adversarial_arr = np.stack(score_adversarial, axis=0).astype(np.float32)
@@ -862,7 +1285,9 @@ def main() -> None:
             epsilon=np.asarray(args.epsilon, dtype=np.float32),
             alpha=np.asarray(effective_step_size, dtype=np.float32),
             num_steps=np.asarray(args.num_steps, dtype=np.int32),
-            step_size_multiplier=np.asarray(args.step_size_multiplier, dtype=np.float32),
+            step_size_multiplier=np.asarray(
+                args.step_size_multiplier, dtype=np.float32
+            ),
         )
         sweep_summary = {
             "attack_id": attack_id,
@@ -872,12 +1297,25 @@ def main() -> None:
             "num_steps": int(args.num_steps),
             "step_size_multiplier": float(args.step_size_multiplier),
             "num_samples": int(target_arr.shape[0]),
+            "attack_mode": args.attack_mode,
             "clean_map": float(clean_map),
             "adversarial_map": float(adversarial_map),
+            "mean_true_label_prob_source": _mean_of_row_values(
+                rows, "mean_true_label_prob_source"
+            ),
+            "mean_true_label_prob_adversarial": _mean_of_row_values(
+                rows, "mean_true_label_prob_adversarial"
+            ),
+            "mean_frac_true_labels_suppressed": _mean_of_row_values(
+                rows, "frac_true_labels_suppressed"
+            ),
             "mean_adversarial_loss": float(
                 np.nanmean(
                     np.asarray(
-                        [row.get("classification_loss", np.nan) for row in sweep_metrics_rows],
+                        [
+                            row.get("classification_loss", np.nan)
+                            for row in sweep_metrics_rows
+                        ],
                         dtype=np.float64,
                     )
                 )
@@ -885,7 +1323,10 @@ def main() -> None:
             "mean_clean_loss": float(
                 np.nanmean(
                     np.asarray(
-                        [row.get("clean_classification_loss", np.nan) for row in sweep_metrics_rows],
+                        [
+                            row.get("clean_classification_loss", np.nan)
+                            for row in sweep_metrics_rows
+                        ],
                         dtype=np.float64,
                     )
                 )
@@ -897,7 +1338,9 @@ def main() -> None:
                 np.mean(np.asarray(sweep_delta_l2_values, dtype=np.float64))
             ),
         }
-        with (layer_output_dir / "sweep_summary.json").open("w", encoding="utf-8") as handle:
+        with (layer_output_dir / "sweep_summary.json").open(
+            "w", encoding="utf-8"
+        ) as handle:
             json.dump(sweep_summary, handle, indent=2, sort_keys=True)
         print(
             f"Sweep metrics: clean mAP={clean_map:.4f}, adversarial mAP={adversarial_map:.4f}, "

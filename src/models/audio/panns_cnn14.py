@@ -56,7 +56,7 @@ def _load_panns_cnn14_class(code_root: Path):
             if exc.name == "torchlibrosa":
                 raise ModuleNotFoundError(
                     "Loading PANNs Cnn14 requires 'torchlibrosa'. "
-                    "Install torchlibrosa in the metamMuon environment."
+                    "Install torchlibrosa in the project's uv environment."
                 ) from exc
             raise
 
